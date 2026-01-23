@@ -1,3 +1,22 @@
+#!/usr/bin/env node
+/**
+ * MCP Server 独立入口文件
+ * 
+ * 此文件用于作为独立进程运行 MCP Server
+ * Cursor/VS Code 会通过 stdio 与此服务器通信
+ * 
+ * 使用方法:
+ * 在 Cursor 的 MCP 配置中添加:
+ * {
+ *   "mcpServers": {
+ *     "cursor-feedback": {
+ *       "command": "node",
+ *       "args": ["/path/to/dist/mcp-server.js"]
+ *     }
+ *   }
+ * }
+ */
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -6,6 +25,12 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import * as http from 'http';
 import * as os from 'os';
+
+// 调试日志输出到 stderr（不影响 stdio 通信）
+function debugLog(message: string) {
+  const timestamp = new Date().toISOString();
+  console.error(`[${timestamp}] ${message}`);
+}
 
 /**
  * 反馈请求接口
@@ -32,19 +57,12 @@ interface FeedbackResponse {
 }
 
 /**
- * MCP Server - 独立运行的 MCP 服务
- * 
- * 架构说明：
- * 1. MCP Server 通过 stdio 与 AI Agent (Cursor) 通信
- * 2. 同时启动一个 HTTP Server 用于与 VS Code 插件通信
- * 3. 当 AI 调用 interactive_feedback 工具时，通知 VS Code 插件显示反馈界面
- * 4. VS Code 插件收集用户反馈后，通过 HTTP 接口返回结果
+ * MCP Feedback Server
  */
-export class McpServer {
+class McpFeedbackServer {
   private server: Server;
   private httpServer: http.Server | null = null;
   private port: number;
-  private isRunning: boolean = false;
   
   // 待处理的反馈请求
   private pendingRequests: Map<string, {
@@ -56,7 +74,7 @@ export class McpServer {
   // 当前反馈请求
   private currentRequest: FeedbackRequest | null = null;
 
-  constructor(port: number = 5678) {
+  constructor(port: number = 8766) {
     this.port = port;
     
     this.server = new Server(
@@ -166,14 +184,18 @@ Returns:
       timestamp: Date.now(),
     };
 
-    console.error(`[MCP] Feedback request created: ${requestId}`);
-    console.error(`[MCP] Waiting for VS Code extension to collect feedback...`);
+    debugLog(`Feedback request created: ${requestId}`);
+    debugLog(`Summary: ${summary}`);
+    debugLog(`Project: ${projectDir}`);
+    debugLog(`Timeout: ${timeout}s`);
+    debugLog(`Waiting for VS Code extension to collect feedback...`);
 
     try {
       // 等待用户反馈
       const result = await this.waitForFeedback(requestId, timeout * 1000);
 
       if (!result) {
+        debugLog('Feedback request timed out or cancelled');
         return {
           content: [
             {
@@ -183,6 +205,8 @@ Returns:
           ],
         };
       }
+
+      debugLog(`Received feedback: ${result.interactive_feedback?.substring(0, 100)}...`);
 
       const contentItems: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [];
 
@@ -196,6 +220,7 @@ Returns:
 
       // 添加图片
       if (result.images && result.images.length > 0) {
+        debugLog(`Processing ${result.images.length} images`);
         for (const img of result.images) {
           contentItems.push({
             type: 'image',
@@ -214,6 +239,7 @@ Returns:
 
       return { content: contentItems };
     } catch (error) {
+      debugLog(`Error collecting feedback: ${error}`);
       return {
         content: [
           {
@@ -231,13 +257,18 @@ Returns:
    * 等待用户反馈
    */
   private waitForFeedback(requestId: string, timeoutMs: number): Promise<FeedbackResponse | null> {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       const timeout = setTimeout(() => {
+        debugLog(`Request ${requestId} timed out`);
         this.pendingRequests.delete(requestId);
         resolve(null);
       }, timeoutMs);
 
-      this.pendingRequests.set(requestId, { resolve, reject, timeout });
+      this.pendingRequests.set(requestId, { 
+        resolve, 
+        reject: () => resolve(null), 
+        timeout 
+      });
     });
   }
 
@@ -254,6 +285,7 @@ Returns:
       hostname: os.hostname(),
       interfaceType: 'VS Code Extension',
       mcpServerPort: this.port,
+      pid: process.pid,
     };
 
     return {
@@ -328,6 +360,8 @@ Returns:
               const data = JSON.parse(body) as { requestId: string; feedback: FeedbackResponse };
               const { requestId, feedback } = data;
               
+              debugLog(`Received feedback submission for request: ${requestId}`);
+              
               const pending = this.pendingRequests.get(requestId);
               if (pending) {
                 clearTimeout(pending.timeout);
@@ -337,10 +371,12 @@ Returns:
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: true }));
               } else {
+                debugLog(`Request ${requestId} not found`);
                 res.writeHead(404, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'Request not found' }));
               }
             } catch (error) {
+              debugLog(`Invalid request body: ${error}`);
               res.writeHead(400, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: 'Invalid request body' }));
             }
@@ -351,7 +387,11 @@ Returns:
         // 健康检查
         if (req.method === 'GET' && req.url === '/api/health') {
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ status: 'ok', version: '0.0.1' }));
+          res.end(JSON.stringify({ 
+            status: 'ok', 
+            version: '0.0.1',
+            hasCurrentRequest: this.currentRequest !== null,
+          }));
           return;
         }
 
@@ -361,15 +401,17 @@ Returns:
 
       this.httpServer.on('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
-          console.error(`[MCP] Port ${this.port} is already in use`);
-          reject(err);
+          debugLog(`Port ${this.port} is already in use, trying next port...`);
+          this.port++;
+          this.httpServer?.close();
+          this.startHttpServer().then(resolve).catch(reject);
         } else {
           reject(err);
         }
       });
 
       this.httpServer.listen(this.port, '127.0.0.1', () => {
-        console.error(`[MCP] HTTP Server listening on http://127.0.0.1:${this.port}`);
+        debugLog(`HTTP Server listening on http://127.0.0.1:${this.port}`);
         resolve();
       });
     });
@@ -379,12 +421,9 @@ Returns:
    * 启动服务器
    */
   async start(): Promise<void> {
-    if (this.isRunning) {
-      console.error('[MCP] Server is already running');
-      return;
-    }
-
     try {
+      debugLog('Starting MCP Feedback Server...');
+      
       // 启动 HTTP 服务器
       await this.startHttpServer();
       
@@ -392,10 +431,10 @@ Returns:
       const transport = new StdioServerTransport();
       await this.server.connect(transport);
       
-      this.isRunning = true;
-      console.error('[MCP] MCP Server started successfully');
+      debugLog('MCP Server started successfully');
+      debugLog('Waiting for tool calls from AI agent...');
     } catch (error) {
-      console.error('[MCP] Failed to start server:', error);
+      debugLog(`Failed to start server: ${error}`);
       throw error;
     }
   }
@@ -404,10 +443,8 @@ Returns:
    * 停止服务器
    */
   stop(): void {
-    if (!this.isRunning) {
-      return;
-    }
-
+    debugLog('Stopping server...');
+    
     // 关闭 HTTP 服务器
     if (this.httpServer) {
       this.httpServer.close();
@@ -423,32 +460,38 @@ Returns:
     
     // 关闭 MCP 服务器
     this.server.close();
-    this.isRunning = false;
-    console.error('[MCP] Server stopped');
+    debugLog('Server stopped');
   }
 }
 
-/**
- * 独立运行入口
- */
+// 主函数
 async function main() {
-  const port = parseInt(process.env.MCP_PORT || '8766', 10);
-  const server = new McpServer(port);
+  const port = parseInt(process.env.MCP_FEEDBACK_PORT || '5678', 10);
+  const server = new McpFeedbackServer(port);
   
+  // 处理进程信号
   process.on('SIGINT', () => {
+    debugLog('Received SIGINT');
     server.stop();
     process.exit(0);
   });
   
   process.on('SIGTERM', () => {
+    debugLog('Received SIGTERM');
     server.stop();
     process.exit(0);
+  });
+
+  process.on('uncaughtException', (error) => {
+    debugLog(`Uncaught exception: ${error}`);
+    server.stop();
+    process.exit(1);
   });
 
   await server.start();
 }
 
-// 如果直接运行此文件
-if (require.main === module) {
-  main().catch(console.error);
-}
+main().catch((error) => {
+  console.error('Failed to start MCP server:', error);
+  process.exit(1);
+});

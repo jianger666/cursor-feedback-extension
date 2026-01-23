@@ -1,11 +1,26 @@
 {
-  "name": "cursor-feedback-extension",
+  "name": "@jianger666/cursor-feedback",
   "displayName": "Cursor Feedback",
-  "description": "Interactive feedback collection panel for AI agents in Cursor/VS Code",
-  "version": "0.0.1",
+  "description": "Interactive feedback collection for AI agents in Cursor/VS Code - MCP Server with sidebar UI",
+  "version": "0.1.1",
+  "author": "jianger666",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jianger666/cursor-feedback-extension"
+  },
+  "keywords": [
+    "mcp",
+    "cursor",
+    "vscode",
+    "ai",
+    "feedback",
+    "model-context-protocol"
+  ],
   "publisher": "jianger666",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.85.0",
+    "node": ">=18.0.0"
   },
   "categories": [
     "Other"
@@ -14,6 +29,9 @@
     "onStartupFinished"
   ],
   "main": "./dist/extension.js",
+  "bin": {
+    "cursor-feedback-mcp": "./dist/mcp-server.js"
+  },
   "contributes": {
     "commands": [
       {
@@ -22,13 +40,13 @@
         "category": "Cursor Feedback"
       },
       {
-        "command": "cursorFeedback.startServer",
-        "title": "Start MCP Server",
+        "command": "cursorFeedback.startPolling",
+        "title": "Start Listening for Feedback Requests",
         "category": "Cursor Feedback"
       },
       {
-        "command": "cursorFeedback.stopServer",
-        "title": "Stop MCP Server",
+        "command": "cursorFeedback.stopPolling",
+        "title": "Stop Listening",
         "category": "Cursor Feedback"
       }
     ],
@@ -55,13 +73,13 @@
       "properties": {
         "cursorFeedback.serverPort": {
           "type": "number",
-          "default": 8766,
-          "description": "Port for the MCP server"
+          "default": 5678,
+          "description": "Port for the MCP server HTTP interface"
         },
         "cursorFeedback.autoStartServer": {
           "type": "boolean",
           "default": true,
-          "description": "Automatically start MCP server on extension activation"
+          "description": "Automatically start listening for feedback requests on extension activation"
         },
         "cursorFeedback.language": {
           "type": "string",
@@ -77,8 +95,8 @@
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
-    "build:mcp": "tsc -p ./tsconfig.mcp.json",
-    "start:mcp": "node dist/mcp-server.js"
+    "start:mcp": "node dist/mcp-server.js",
+    "prepublishOnly": "npm run compile"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
