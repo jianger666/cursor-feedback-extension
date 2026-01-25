@@ -123,15 +123,14 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   private _currentRequest: FeedbackRequest | null = null;
   private _basePort: number;
   private _activePort: number | null = null;
-  private _portScanRange = 10; // 扫描端口范围
-  private _startTime: number; // 插件启动时间
+  private _portScanRange = 30; // 扫描端口范围
+  private _seenRequestIds: Set<string> = new Set(); // 已处理过的请求 ID
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
     port: number
   ) {
     this._basePort = port;
-    this._startTime = Date.now();
   }
 
   public resolveWebviewView(
@@ -212,37 +211,36 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
    */
   private async _pollForFeedbackRequest() {
     try {
-      // 如果已知活跃端口，先检查该端口
-      if (this._activePort) {
-        const result = await this._checkPortForRequest(this._activePort);
-        if (result.request) {
-          this._handleNewRequest(result.request, result.port);
-          return;
-        } else if (result.connected && !result.request && this._currentRequest) {
+      // 并行扫描所有端口
+      const ports = [];
+      for (let i = 0; i < this._portScanRange; i++) {
+        ports.push(this._basePort + i);
+      }
+
+      // 并行检查所有端口
+      const results = await Promise.all(ports.map(port => this._checkPortForRequest(port)));
+      
+      // 收集所有有效请求，按时间戳排序（最新的优先）
+      const validRequests = results
+        .filter(r => r.request && !this._seenRequestIds.has(r.request.id))
+        .sort((a, b) => b.request!.timestamp - a.request!.timestamp);
+      
+      // 处理最新的请求
+      if (validRequests.length > 0) {
+        const newest = validRequests[0];
+        this._activePort = newest.port;
+        this._handleNewRequest(newest.request!, newest.port);
+        return;
+      }
+
+      // 检查活跃端口的请求状态（可能已被处理或超时）
+      if (this._activePort && this._currentRequest) {
+        const activeResult = results.find(r => r.port === this._activePort);
+        if (activeResult && activeResult.connected && !activeResult.request) {
           // 请求已被处理或超时
           this._currentRequest = null;
           this._showWaitingState();
-          return;
         }
-      }
-
-      // 扫描端口范围寻找有请求的服务器
-      for (let i = 0; i < this._portScanRange; i++) {
-        const port = this._basePort + i;
-        if (port === this._activePort) continue; // 已经检查过了
-        
-        const result = await this._checkPortForRequest(port);
-        if (result.request) {
-          this._activePort = port;
-          this._handleNewRequest(result.request, port);
-          return;
-        }
-      }
-
-      // 没有找到任何请求
-      if (this._currentRequest) {
-        this._currentRequest = null;
-        this._showWaitingState();
       }
     } catch (error) {
       // 服务器可能未启动，静默处理
@@ -251,7 +249,6 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * 检查指定端口是否有反馈请求
-   * 只返回属于当前工作区的请求
    */
   private async _checkPortForRequest(port: number): Promise<{
     connected: boolean;
@@ -262,10 +259,18 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       const response = await this._httpGet(`http://127.0.0.1:${port}/api/feedback/current`);
       const request = JSON.parse(response) as FeedbackRequest | null;
       
-      // 如果有请求，检查是否属于当前工作区
-      if (request && !isPathInWorkspace(request.projectDir)) {
-        // 请求不属于当前工作区，忽略
-        return { connected: true, request: null, port };
+      // 检查请求是否属于当前工作区
+      if (request) {
+        const workspacePaths = getWorkspacePaths();
+        const isMatch = isPathInWorkspace(request.projectDir);
+        console.log(`[Port ${port}] Request projectDir: ${request.projectDir}`);
+        console.log(`[Port ${port}] Workspace paths: ${JSON.stringify(workspacePaths)}`);
+        console.log(`[Port ${port}] isMatch: ${isMatch}`);
+        
+        if (!isMatch) {
+          // 请求不属于当前工作区，忽略
+          return { connected: true, request: null, port };
+        }
       }
       
       return { connected: true, request, port };
@@ -278,22 +283,36 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
    * 处理新的反馈请求
    */
   private _handleNewRequest(request: FeedbackRequest, port: number) {
-    // 只处理在插件启动之后创建的请求
-    // 这样可以避免插件启动时检测到旧请求自动切换
-    const isNewRequest = request.timestamp > this._startTime;
+    // 如果已经处理过这个请求，跳过
+    if (this._seenRequestIds.has(request.id)) {
+      return;
+    }
+
+    // 判断是否为"新鲜"请求：创建后 10 秒内被发现
+    const requestAge = Date.now() - request.timestamp;
+    const isFreshRequest = requestAge < 10000; // 10秒内
     
+    console.log(`Feedback request on port ${port}:`, request.id, 
+      `age: ${requestAge}ms, isFresh: ${isFreshRequest}`);
+    
+    // 标记为已见过
+    this._seenRequestIds.add(request.id);
+    
+    // 清理旧的请求 ID（保留最近 100 个）
+    if (this._seenRequestIds.size > 100) {
+      const ids = Array.from(this._seenRequestIds);
+      this._seenRequestIds = new Set(ids.slice(-50));
+    }
+
     if (!this._currentRequest || request.id !== this._currentRequest.id) {
-      console.log(`Feedback request on port ${port}:`, request.id, 
-        `timestamp: ${request.timestamp}, startTime: ${this._startTime}, isNew: ${isNewRequest}`);
-      
       this._currentRequest = request;
       this._activePort = port;
       
-      // 显示请求内容（无论新旧都显示，方便用户查看）
+      // 显示请求内容
       this._showFeedbackRequest(request);
       
-      // 只有新请求才自动聚焦和通知
-      if (isNewRequest) {
+      // 只对新鲜请求自动聚焦和通知
+      if (isFreshRequest) {
         vscode.commands.executeCommand('cursorFeedback.feedbackView.focus');
         vscode.window.showInformationMessage('AI 正在等待您的反馈');
       }

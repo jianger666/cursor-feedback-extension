@@ -75,6 +75,13 @@ class McpFeedbackServer {
   // 当前反馈请求
   private currentRequest: FeedbackRequest | null = null;
 
+  // 最后活动时间（用于自动退出）
+  private lastActivityTime: number = Date.now();
+  // 自动退出检查定时器
+  private inactivityCheckInterval: NodeJS.Timeout | null = null;
+  // 无活动退出时间（2 分钟）
+  private readonly INACTIVITY_TIMEOUT = 2 * 60 * 1000;
+
   constructor(port: number = 8766) {
     this.port = port;
     
@@ -437,6 +444,9 @@ class McpFeedbackServer {
   private startHttpServer(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.httpServer = http.createServer((req, res) => {
+        // 更新活动时间（收到任何请求都算活动）
+        this.updateActivity();
+
         // 设置 CORS 头
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -540,6 +550,28 @@ class McpFeedbackServer {
   }
 
   /**
+   * 更新最后活动时间
+   */
+  private updateActivity(): void {
+    this.lastActivityTime = Date.now();
+  }
+
+  /**
+   * 启动无活动自动退出检查
+   */
+  private startInactivityCheck(): void {
+    // 每分钟检查一次
+    this.inactivityCheckInterval = setInterval(() => {
+      const inactiveTime = Date.now() - this.lastActivityTime;
+      if (inactiveTime > this.INACTIVITY_TIMEOUT) {
+        debugLog(`No activity for ${Math.round(inactiveTime / 1000)}s, auto-exiting...`);
+        this.stop();
+        process.exit(0);
+      }
+    }, 60 * 1000);
+  }
+
+  /**
    * 启动服务器
    */
   async start(): Promise<void> {
@@ -553,7 +585,11 @@ class McpFeedbackServer {
       const transport = new StdioServerTransport();
       await this.server.connect(transport);
       
+      // 启动无活动自动退出检查
+      this.startInactivityCheck();
+      
       debugLog('MCP Server started successfully');
+      debugLog(`Auto-exit after ${this.INACTIVITY_TIMEOUT / 1000}s of inactivity`);
       debugLog('Waiting for tool calls from AI agent...');
     } catch (error) {
       debugLog(`Failed to start server: ${error}`);
@@ -567,6 +603,12 @@ class McpFeedbackServer {
   stop(): void {
     debugLog('Stopping server...');
     
+    // 清理无活动检查定时器
+    if (this.inactivityCheckInterval) {
+      clearInterval(this.inactivityCheckInterval);
+      this.inactivityCheckInterval = null;
+    }
+
     // 关闭 HTTP 服务器
     if (this.httpServer) {
       this.httpServer.close();
