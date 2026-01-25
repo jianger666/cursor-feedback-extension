@@ -53,6 +53,7 @@ interface FeedbackResponse {
     data: string;
     size: number;
   }>;
+  attachedFiles: string[];
   project_directory: string;
 }
 
@@ -107,11 +108,12 @@ USAGE RULES:
 3. Whenever user feedback is received, if the feedback content is not empty, you must call this tool again and adjust behavior based on the feedback content.
 4. Only when the user explicitly indicates "end" or "no more interaction needed" can you stop calling this tool, and the process is considered complete.
 5. You should summarize what have done, and provide project directory through args to let user know what you have done to provide feedback for next step.
+6. IMPORTANT: If feedback request times out, you MUST call this tool again to continue waiting for user feedback. Do not give up after timeout.
 
 Args:
-    project_directory: Project directory path for context
-    summary: Summary of AI work completed for user review
-    timeout: Timeout in seconds for waiting user feedback (default: 600 seconds)
+    project_directory: Project directory path for context (MUST be the absolute path of current workspace)
+    summary: Summary of AI work completed for user review (supports Markdown)
+    timeout: Timeout in seconds for waiting user feedback (default: 300 seconds = 5 minutes)
 
 Returns:
     list: List containing TextContent and MCPImage objects representing user feedback`,
@@ -120,18 +122,18 @@ Returns:
               properties: {
                 project_directory: {
                   type: 'string',
-                  description: 'Project directory path for context',
+                  description: 'Project directory path for context (MUST be the absolute path of current workspace)',
                   default: '.',
                 },
                 summary: {
                   type: 'string',
-                  description: 'Summary of AI work completed for user review',
+                  description: 'Summary of AI work completed for user review (supports Markdown)',
                   default: 'I have completed the task you requested.',
                 },
                 timeout: {
                   type: 'number',
-                  description: 'Timeout in seconds for waiting user feedback (default: 600 seconds)',
-                  default: 600,
+                  description: 'Timeout in seconds for waiting user feedback (default: 300 seconds = 5 minutes)',
+                  default: 300,
                 },
               },
             },
@@ -171,7 +173,10 @@ Returns:
   }> {
     const projectDir = (args?.project_directory as string) || '.';
     const summary = (args?.summary as string) || 'I have completed the task you requested.';
-    const timeout = (args?.timeout as number) || 600;
+    // 超时时间优先级：环境变量 > 工具参数 > 默认值（300秒）
+    // 这样用户配置的环境变量永远生效，不会被 AI 覆盖
+    const envTimeout = process.env.MCP_FEEDBACK_TIMEOUT ? parseInt(process.env.MCP_FEEDBACK_TIMEOUT, 10) : null;
+    const timeout = envTimeout || (args?.timeout as number) || 300;
 
     const requestId = this.generateRequestId();
     
@@ -210,11 +215,28 @@ Returns:
 
       const contentItems: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [];
 
+      // 构建反馈文本
+      let feedbackText = '';
+      
       // 添加文字反馈
       if (result.interactive_feedback) {
+        feedbackText += `=== User Feedback ===\n${result.interactive_feedback}`;
+      }
+
+      // 添加附加文件路径
+      if (result.attachedFiles && result.attachedFiles.length > 0) {
+        debugLog(`Processing ${result.attachedFiles.length} attached files`);
+        feedbackText += `\n\n=== Attached Files ===\n`;
+        for (const filePath of result.attachedFiles) {
+          feedbackText += `${filePath}\n`;
+        }
+        feedbackText += `\nPlease read the above files to understand the context.`;
+      }
+
+      if (feedbackText) {
         contentItems.push({
           type: 'text',
-          text: `=== User Feedback ===\n${result.interactive_feedback}`,
+          text: feedbackText,
         });
       }
 
@@ -326,6 +348,85 @@ Returns:
   }
 
   /**
+   * 检查端口是否被我们的 MCP Server 占用，如果是则请求关闭
+   */
+  private async checkAndCleanPort(port: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: port,
+          path: '/api/health',
+          method: 'GET',
+          timeout: 1000,
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (chunk) => (data += chunk));
+          res.on('end', () => {
+            try {
+              const health = JSON.parse(data);
+              if (health.status === 'ok') {
+                debugLog(`Found existing MCP Server on port ${port}, requesting shutdown...`);
+                // 请求旧服务器关闭
+                this.requestShutdown(port).then(() => {
+                  resolve(true);
+                }).catch(() => {
+                  resolve(false);
+                });
+              } else {
+                resolve(false);
+              }
+            } catch {
+              resolve(false);
+            }
+          });
+        }
+      );
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => {
+        req.destroy();
+        resolve(false);
+      });
+      req.end();
+    });
+  }
+
+  /**
+   * 请求旧的 MCP Server 关闭
+   */
+  private async requestShutdown(port: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port: port,
+          path: '/api/shutdown',
+          method: 'POST',
+          timeout: 3000,
+        },
+        (res) => {
+          res.on('data', () => {});
+          res.on('end', () => {
+            debugLog(`Shutdown request sent to port ${port}`);
+            // 等待旧进程退出
+            setTimeout(resolve, 500);
+          });
+        }
+      );
+      req.on('error', () => {
+        // 旧服务器可能已经关闭
+        setTimeout(resolve, 200);
+      });
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('Shutdown request timeout'));
+      });
+      req.end();
+    });
+  }
+
+  /**
    * 启动 HTTP 服务器，用于与 VS Code 插件通信
    */
   private startHttpServer(): Promise<void> {
@@ -391,7 +492,22 @@ Returns:
             status: 'ok', 
             version: '0.0.1',
             hasCurrentRequest: this.currentRequest !== null,
+            pid: process.pid,
           }));
+          return;
+        }
+
+        // 关闭服务器（用于新进程替换旧进程）
+        if (req.method === 'POST' && req.url === '/api/shutdown') {
+          debugLog('Received shutdown request from new MCP Server instance');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ success: true, message: 'Shutting down...' }));
+          
+          // 延迟关闭，确保响应已发送
+          setTimeout(() => {
+            this.stop();
+            process.exit(0);
+          }, 100);
           return;
         }
 
@@ -399,12 +515,23 @@ Returns:
         res.end('Not Found');
       });
 
-      this.httpServer.on('error', (err: NodeJS.ErrnoException) => {
+      this.httpServer.on('error', async (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
-          debugLog(`Port ${this.port} is already in use, trying next port...`);
-          this.port++;
+          debugLog(`Port ${this.port} is already in use, checking if it's our MCP Server...`);
           this.httpServer?.close();
-          this.startHttpServer().then(resolve).catch(reject);
+          
+          // 尝试关闭旧的 MCP Server
+          const cleaned = await this.checkAndCleanPort(this.port);
+          if (cleaned) {
+            debugLog(`Old MCP Server closed, retrying on port ${this.port}...`);
+            // 等待端口释放
+            await new Promise(r => setTimeout(r, 300));
+            this.startHttpServer().then(resolve).catch(reject);
+          } else {
+            debugLog(`Port ${this.port} is used by another process, trying next port...`);
+            this.port++;
+            this.startHttpServer().then(resolve).catch(reject);
+          }
         } else {
           reject(err);
         }
@@ -466,7 +593,7 @@ Returns:
 
 // 主函数
 async function main() {
-  const port = parseInt(process.env.MCP_FEEDBACK_PORT || '5678', 10);
+  const port = 61927;
   const server = new McpFeedbackServer(port);
   
   // 处理进程信号

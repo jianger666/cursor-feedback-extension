@@ -7,11 +7,8 @@ let pollingInterval: NodeJS.Timeout | null = null;
 export function activate(context: vscode.ExtensionContext) {
   console.log('Cursor Feedback extension is now active!');
 
-  const config = vscode.workspace.getConfiguration('cursorFeedback');
-  const port = config.get<number>('serverPort', 5678);
-
-  // 注册侧边栏 WebView
-  feedbackViewProvider = new FeedbackViewProvider(context.extensionUri, port);
+  // 注册侧边栏 WebView（端口从 61927 开始自动扫描）
+  feedbackViewProvider = new FeedbackViewProvider(context.extensionUri, 61927);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(
       'cursorFeedback.feedbackView',
@@ -47,11 +44,9 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // 自动开始轮询
-  if (config.get<boolean>('autoStartServer', true)) {
-    setTimeout(() => {
-      feedbackViewProvider?.startPolling();
-    }, 1000);
-  }
+  setTimeout(() => {
+    feedbackViewProvider?.startPolling();
+  }, 1000);
 }
 
 export function deactivate() {
@@ -84,16 +79,28 @@ function getWorkspacePaths(): string[] {
 
 /**
  * 检查路径是否匹配当前工作区（精确匹配）
+ * - 有工作区的窗口：只接收匹配工作区路径的消息
+ * - 没有工作区的窗口：只接收没有指定项目路径的消息
  */
 function isPathInWorkspace(targetPath: string): boolean {
   const workspacePaths = getWorkspacePaths();
-  if (workspacePaths.length === 0) {
-    return true; // 没有打开工作区时，接受所有请求
-  }
   
   // 规范化路径（去除末尾斜杠，统一分隔符，小写）
   const normalize = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
   const normalizedTarget = normalize(targetPath);
+  
+  // 检查 targetPath 是否为空或默认值
+  const isEmptyPath = !targetPath || targetPath === '.' || normalizedTarget === '' || normalizedTarget === '.';
+  
+  if (workspacePaths.length === 0) {
+    // 没有打开工作区时，只接收没有指定项目路径的消息
+    return isEmptyPath;
+  }
+  
+  // 有工作区时，不接收空路径的消息
+  if (isEmptyPath) {
+    return false;
+  }
   
   for (const wsPath of workspacePaths) {
     const normalizedWs = normalize(wsPath);
@@ -154,6 +161,12 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'checkServer':
           await this._checkServerHealth();
+          break;
+        case 'selectFile':
+          await this._handleSelectFile();
+          break;
+        case 'selectFolder':
+          await this._handleSelectFolder();
           break;
       }
     });
@@ -270,17 +283,14 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       console.log(`New feedback request received on port ${port}:`, request.id);
       this._currentRequest = request;
       this._activePort = port;
+      
+      // 自动聚焦到反馈面板
+      vscode.commands.executeCommand('cursorFeedback.feedbackView.focus');
+      
       this._showFeedbackRequest(request);
       
-      // 显示通知
-      vscode.window.showInformationMessage(
-        'AI 正在等待您的反馈',
-        '查看'
-      ).then(action => {
-        if (action === '查看') {
-          vscode.commands.executeCommand('cursorFeedback.feedbackView.focus');
-        }
-      });
+      // 显示通知（作为备用提示）
+      vscode.window.showInformationMessage('AI 正在等待您的反馈');
     }
   }
 
@@ -347,6 +357,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     requestId: string;
     interactive_feedback: string;
     images: Array<{ name: string; data: string; size: number }>;
+    attachedFiles: string[];
     project_directory: string;
   }) {
     // 使用活跃端口提交反馈
@@ -360,6 +371,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
           feedback: {
             interactive_feedback: payload.interactive_feedback,
             images: payload.images,
+            attachedFiles: payload.attachedFiles || [],
             project_directory: payload.project_directory
           }
         })
@@ -375,6 +387,46 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       }
     } catch (error) {
       vscode.window.showErrorMessage('提交失败：无法连接到 MCP Server');
+    }
+  }
+
+  /**
+   * 处理选择文件
+   */
+  private async _handleSelectFile() {
+    const result = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      canSelectFiles: true,
+      canSelectFolders: false,
+      openLabel: '选择文件'
+    });
+    
+    if (result && result.length > 0) {
+      const paths = result.map(uri => uri.fsPath);
+      this._view?.webview.postMessage({
+        type: 'filesSelected',
+        payload: { paths, isFolder: false }
+      });
+    }
+  }
+
+  /**
+   * 处理选择文件夹
+   */
+  private async _handleSelectFolder() {
+    const result = await vscode.window.showOpenDialog({
+      canSelectMany: true,
+      canSelectFiles: false,
+      canSelectFolders: true,
+      openLabel: '选择文件夹'
+    });
+    
+    if (result && result.length > 0) {
+      const paths = result.map(uri => uri.fsPath);
+      this._view?.webview.postMessage({
+        type: 'filesSelected',
+        payload: { paths, isFolder: true }
+      });
     }
   }
 
@@ -579,27 +631,6 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       border-color: var(--vscode-focusBorder);
     }
     
-    .quick-buttons {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      margin-top: 10px;
-    }
-    
-    .quick-btn {
-      padding: 5px 12px;
-      font-size: 12px;
-      background: var(--vscode-button-secondaryBackground);
-      color: var(--vscode-button-secondaryForeground);
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      transition: background 0.15s;
-    }
-    
-    .quick-btn:hover {
-      background: var(--vscode-button-secondaryHoverBackground);
-    }
     
     .submit-btn {
       width: 100%;
@@ -665,25 +696,75 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       background: var(--vscode-notificationsInfoIcon-foreground);
     }
     
-    .image-upload {
+    .attachments-area {
       margin-top: 10px;
     }
     
-    .image-upload-btn {
+    .attachment-buttons {
+      display: flex;
+      justify-content: flex-end;
+      gap: 4px;
+    }
+    
+    .attachment-btn {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      padding: 8px 14px;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
       background: var(--vscode-button-secondaryBackground);
       color: var(--vscode-button-secondaryForeground);
       border: none;
       border-radius: 4px;
       cursor: pointer;
-      font-size: 12px;
+      font-size: 14px;
     }
     
-    .image-upload-btn:hover {
+    .attachment-btn:hover {
       background: var(--vscode-button-secondaryHoverBackground);
+    }
+    
+    .file-list {
+      margin-top: 8px;
+    }
+    
+    .file-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      background: var(--vscode-textBlockQuote-background);
+      border-radius: 4px;
+      margin-bottom: 4px;
+      font-size: 11px;
+    }
+    
+    .file-item .file-icon {
+      flex-shrink: 0;
+    }
+    
+    .file-item .file-path {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--vscode-descriptionForeground);
+    }
+    
+    .file-item .file-remove {
+      flex-shrink: 0;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--vscode-errorForeground);
+      color: white;
+      border: none;
+      cursor: pointer;
+      font-size: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
     
     .image-preview {
@@ -726,6 +807,33 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       display: none !important;
     }
     
+    .loading-container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      gap: 12px;
+    }
+    
+    .loading-spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid var(--vscode-input-border);
+      border-top-color: var(--vscode-button-background);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    
+    .loading-text {
+      font-size: 12px;
+      color: var(--vscode-descriptionForeground);
+    }
+    
     .project-info {
       font-size: 11px;
       color: var(--vscode-descriptionForeground);
@@ -745,7 +853,13 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   </style>
 </head>
 <body>
-  <div class="container">
+  <!-- Loading 状态 -->
+  <div id="loadingContainer" class="loading-container">
+    <div class="loading-spinner"></div>
+    <div class="loading-text">${i18n.loading}</div>
+  </div>
+  
+  <div id="mainContainer" class="container hidden">
     <!-- 服务器状态 -->
     <div id="serverStatus" class="server-status">
       <span class="dot"></span>
@@ -777,21 +891,22 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
           placeholder="${i18n.placeholder}"
         ></textarea>
         
-        <!-- 快捷按钮 -->
-        <div class="quick-buttons">
-          <button class="quick-btn" data-text="${i18n.continue}">${i18n.continue}</button>
-          <button class="quick-btn" data-text="${i18n.confirm}">${i18n.confirm}</button>
-          <button class="quick-btn" data-text="${i18n.modify}">${i18n.modify}</button>
-          <button class="quick-btn" data-text="${i18n.cancel}">${i18n.cancel}</button>
-        </div>
-        
-        <!-- 图片上传 -->
-        <div class="image-upload">
-          <button id="uploadBtn" class="image-upload-btn">
-            📎 ${i18n.uploadImage}
-          </button>
+        <!-- 附件区域 -->
+        <div class="attachments-area">
+          <div class="attachment-buttons">
+            <button id="uploadBtn" class="attachment-btn" title="${i18n.uploadImage}">
+              🖼️
+            </button>
+            <button id="selectFileBtn" class="attachment-btn" title="${i18n.selectFile}">
+              📄
+            </button>
+            <button id="selectFolderBtn" class="attachment-btn" title="${i18n.selectFolder}">
+              📁
+            </button>
+          </div>
           <input type="file" id="imageInput" accept="image/*" multiple style="display:none">
           <div id="imagePreview" class="image-preview"></div>
+          <div id="fileList" class="file-list"></div>
         </div>
         
         <div id="timeoutInfo" class="timeout-info"></div>
@@ -801,6 +916,16 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       <button id="submitBtn" class="submit-btn">${i18n.submit} (Ctrl+Enter)</button>
     </div>
   </div>
+  
+  <script>
+    // 初始化时隐藏 loading 显示主内容
+    function hideLoading() {
+      const loadingContainer = document.getElementById('loadingContainer');
+      const mainContainer = document.getElementById('mainContainer');
+      if (loadingContainer) loadingContainer.classList.add('hidden');
+      if (mainContainer) mainContainer.classList.remove('hidden');
+    }
+  </script>
   
   <script>
     const vscode = acquireVsCodeApi();
@@ -843,67 +968,127 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     const feedbackInput = document.getElementById('feedbackInput');
     const submitBtn = document.getElementById('submitBtn');
     const uploadBtn = document.getElementById('uploadBtn');
+    const selectFileBtn = document.getElementById('selectFileBtn');
+    const selectFolderBtn = document.getElementById('selectFolderBtn');
     const imageInput = document.getElementById('imageInput');
     const imagePreview = document.getElementById('imagePreview');
+    const fileList = document.getElementById('fileList');
     const timeoutInfo = document.getElementById('timeoutInfo');
     
     let uploadedImages = [];
+    let attachedFiles = [];
     let currentRequestId = '';
     let currentProjectDir = '';
     let requestTimestamp = 0;
-    let requestTimeout = 600;
+    let requestTimeout = 300;
     let countdownInterval = null;
     
     // 国际化文本
     const i18n = ${JSON.stringify(i18n)};
     
-    // 快捷按钮
-    document.querySelectorAll('.quick-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        feedbackInput.value = btn.dataset.text;
-        feedbackInput.focus();
-      });
-    });
     
     // 图片上传
     uploadBtn.addEventListener('click', () => imageInput.click());
     
+    // 选择文件
+    selectFileBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'selectFile' });
+    });
+    
+    // 选择文件夹
+    selectFolderBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'selectFolder' });
+    });
+    
+    // 添加已选文件到列表
+    function addAttachedFile(path, isFolder) {
+      if (attachedFiles.includes(path)) return;
+      attachedFiles.push(path);
+      
+      const item = document.createElement('div');
+      item.className = 'file-item';
+      
+      const icon = document.createElement('span');
+      icon.className = 'file-icon';
+      icon.textContent = isFolder ? '📁' : '📄';
+      
+      const pathSpan = document.createElement('span');
+      pathSpan.className = 'file-path';
+      pathSpan.textContent = path;
+      pathSpan.title = path;
+      
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'file-remove';
+      removeBtn.textContent = '×';
+      removeBtn.onclick = () => {
+        const idx = attachedFiles.indexOf(path);
+        if (idx > -1) attachedFiles.splice(idx, 1);
+        item.remove();
+      };
+      
+      item.appendChild(icon);
+      item.appendChild(pathSpan);
+      item.appendChild(removeBtn);
+      fileList.appendChild(item);
+    }
+    
     imageInput.addEventListener('change', (e) => {
       const files = e.target.files;
       for (const file of files) {
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          const base64 = e.target.result;
-          const imgData = {
-            name: file.name,
-            data: base64.split(',')[1],
-            size: file.size
-          };
-          uploadedImages.push(imgData);
-          
-          // 显示预览
-          const container = document.createElement('div');
-          container.className = 'image-preview-item';
-          
-          const img = document.createElement('img');
-          img.src = base64;
-          
-          const removeBtn = document.createElement('button');
-          removeBtn.className = 'image-remove';
-          removeBtn.textContent = '×';
-          removeBtn.onclick = () => {
-            const index = uploadedImages.indexOf(imgData);
-            if (index > -1) {
-              uploadedImages.splice(index, 1);
-            }
-            container.remove();
-          };
-          
-          container.appendChild(img);
-          container.appendChild(removeBtn);
-          imagePreview.appendChild(container);
+        addImageFile(file);
+      }
+    });
+    
+    // 添加图片文件到预览和上传列表
+    function addImageFile(file) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const base64 = e.target.result;
+        const imgData = {
+          name: file.name || ('pasted-image-' + Date.now() + '.png'),
+          data: base64.split(',')[1],
+          size: file.size
         };
-        reader.readAsDataURL(file);
+        uploadedImages.push(imgData);
+        
+        // 显示预览
+        const container = document.createElement('div');
+        container.className = 'image-preview-item';
+        
+        const img = document.createElement('img');
+        img.src = base64;
+        
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'image-remove';
+        removeBtn.textContent = '×';
+        removeBtn.onclick = () => {
+          const index = uploadedImages.indexOf(imgData);
+          if (index > -1) {
+            uploadedImages.splice(index, 1);
+          }
+          container.remove();
+        };
+        
+        container.appendChild(img);
+        container.appendChild(removeBtn);
+        imagePreview.appendChild(container);
+      };
+      reader.readAsDataURL(file);
+    }
+    
+    // 粘贴图片支持 (Ctrl+V / Cmd+V)
+    document.addEventListener('paste', (e) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault();
+          const file = item.getAsFile();
+          if (file) {
+            addImageFile(file);
+          }
+        }
       }
     });
     
@@ -938,6 +1123,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
           requestId: currentRequestId,
           interactive_feedback: feedback,
           images: uploadedImages,
+          attachedFiles: attachedFiles,
           project_directory: currentProjectDir
         }
       });
@@ -945,7 +1131,9 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       // 重置表单
       feedbackInput.value = '';
       uploadedImages = [];
+      attachedFiles = [];
       imagePreview.innerHTML = '';
+      fileList.innerHTML = '';
       currentRequestId = '';
       
       if (countdownInterval) {
@@ -1008,6 +1196,14 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
             serverStatusText.textContent = i18n.disconnected;
           }
           break;
+          
+        case 'filesSelected':
+          if (message.payload.paths) {
+            for (const path of message.payload.paths) {
+              addAttachedFile(path, message.payload.isFolder);
+            }
+          }
+          break;
       }
     });
     
@@ -1019,6 +1215,9 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     // 通知插件 WebView 已准备就绪
     vscode.postMessage({ type: 'ready' });
     vscode.postMessage({ type: 'checkServer' });
+    
+    // 隐藏 loading，显示主内容
+    hideLoading();
   </script>
 </body>
 </html>`;
@@ -1030,16 +1229,15 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   private _getI18n(lang: string): Record<string, string> {
     const translations: Record<string, Record<string, string>> = {
       'zh-CN': {
+        loading: '加载中...',
         waiting: '等待 AI 请求反馈...',
         waitingHint: '当 AI 需要您的反馈时，这里会显示输入界面',
         summary: 'AI 工作摘要',
         yourFeedback: '您的反馈',
         placeholder: '请输入您的反馈...',
-        continue: '继续',
-        confirm: '确认，没问题',
-        modify: '请修改',
-        cancel: '取消',
         uploadImage: '上传图片',
+        selectFile: '选择文件',
+        selectFolder: '选择文件夹',
         submit: '提交反馈',
         timeout: '剩余时间',
         expired: '已超时',
@@ -1048,16 +1246,15 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         disconnected: 'MCP Server 未连接',
       },
       'zh-TW': {
+        loading: '載入中...',
         waiting: '等待 AI 請求回饋...',
         waitingHint: '當 AI 需要您的回饋時，這裡會顯示輸入介面',
         summary: 'AI 工作摘要',
         yourFeedback: '您的回饋',
         placeholder: '請輸入您的回饋...',
-        continue: '繼續',
-        confirm: '確認，沒問題',
-        modify: '請修改',
-        cancel: '取消',
         uploadImage: '上傳圖片',
+        selectFile: '選擇檔案',
+        selectFolder: '選擇資料夾',
         submit: '提交回饋',
         timeout: '剩餘時間',
         expired: '已超時',
@@ -1066,16 +1263,15 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         disconnected: 'MCP Server 未連接',
       },
       'en': {
+        loading: 'Loading...',
         waiting: 'Waiting for AI feedback request...',
         waitingHint: 'The feedback interface will appear when AI needs your input',
         summary: 'AI Work Summary',
         yourFeedback: 'Your Feedback',
         placeholder: 'Enter your feedback...',
-        continue: 'Continue',
-        confirm: 'Confirm',
-        modify: 'Please modify',
-        cancel: 'Cancel',
         uploadImage: 'Upload Image',
+        selectFile: 'Select File',
+        selectFolder: 'Select Folder',
         submit: 'Submit Feedback',
         timeout: 'Time remaining',
         expired: 'Expired',

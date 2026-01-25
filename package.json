@@ -1,8 +1,8 @@
 {
-  "name": "@jianger666/cursor-feedback",
+  "name": "cursor-feedback",
   "displayName": "Cursor Feedback",
   "description": "Interactive feedback collection for AI agents in Cursor/VS Code - MCP Server with sidebar UI",
-  "version": "0.1.1",
+  "version": "0.1.7",
   "author": "jianger666",
   "license": "MIT",
   "repository": {
@@ -71,21 +71,11 @@
     "configuration": {
       "title": "Cursor Feedback",
       "properties": {
-        "cursorFeedback.serverPort": {
-          "type": "number",
-          "default": 5678,
-          "description": "Port for the MCP server HTTP interface"
-        },
-        "cursorFeedback.autoStartServer": {
-          "type": "boolean",
-          "default": true,
-          "description": "Automatically start listening for feedback requests on extension activation"
-        },
         "cursorFeedback.language": {
           "type": "string",
           "enum": ["zh-CN", "zh-TW", "en"],
           "default": "zh-CN",
-          "description": "Interface language"
+          "description": "Interface language (zh-CN: 简体中文, zh-TW: 繁體中文, en: English)"
         }
       }
     }

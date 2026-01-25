@@ -28,6 +28,7 @@ interface FeedbackResponse {
     data: string;
     size: number;
   }>;
+  attachedFiles: string[];
   project_directory: string;
 }
 
@@ -56,7 +57,7 @@ export class McpServer {
   // 当前反馈请求
   private currentRequest: FeedbackRequest | null = null;
 
-  constructor(port: number = 5678) {
+  constructor(port: number = 61927) {
     this.port = port;
     
     this.server = new Server(
@@ -89,11 +90,12 @@ USAGE RULES:
 3. Whenever user feedback is received, if the feedback content is not empty, you must call this tool again and adjust behavior based on the feedback content.
 4. Only when the user explicitly indicates "end" or "no more interaction needed" can you stop calling this tool, and the process is considered complete.
 5. You should summarize what have done, and provide project directory through args to let user know what you have done to provide feedback for next step.
+6. IMPORTANT: If feedback request times out, you MUST call this tool again to continue waiting for user feedback. Do not give up after timeout.
 
 Args:
-    project_directory: Project directory path for context
-    summary: Summary of AI work completed for user review
-    timeout: Timeout in seconds for waiting user feedback (default: 600 seconds)
+    project_directory: Project directory path for context (MUST be the absolute path of current workspace)
+    summary: Summary of AI work completed for user review (supports Markdown)
+    timeout: Timeout in seconds for waiting user feedback (default: 300 seconds = 5 minutes)
 
 Returns:
     list: List containing TextContent and MCPImage objects representing user feedback`,
@@ -102,18 +104,18 @@ Returns:
               properties: {
                 project_directory: {
                   type: 'string',
-                  description: 'Project directory path for context',
+                  description: 'Project directory path for context (MUST be the absolute path of current workspace)',
                   default: '.',
                 },
                 summary: {
                   type: 'string',
-                  description: 'Summary of AI work completed for user review',
+                  description: 'Summary of AI work completed for user review (supports Markdown)',
                   default: 'I have completed the task you requested.',
                 },
                 timeout: {
                   type: 'number',
-                  description: 'Timeout in seconds for waiting user feedback (default: 600 seconds)',
-                  default: 600,
+                  description: 'Timeout in seconds for waiting user feedback (default: 300 seconds = 5 minutes)',
+                  default: 300,
                 },
               },
             },
@@ -153,7 +155,10 @@ Returns:
   }> {
     const projectDir = (args?.project_directory as string) || '.';
     const summary = (args?.summary as string) || 'I have completed the task you requested.';
-    const timeout = (args?.timeout as number) || 600;
+    // 超时时间优先级：环境变量 > 工具参数 > 默认值（300秒）
+    // 这样用户配置的环境变量永远生效，不会被 AI 覆盖
+    const envTimeout = process.env.MCP_FEEDBACK_TIMEOUT ? parseInt(process.env.MCP_FEEDBACK_TIMEOUT, 10) : null;
+    const timeout = envTimeout || (args?.timeout as number) || 300;
 
     const requestId = this.generateRequestId();
     
@@ -186,11 +191,27 @@ Returns:
 
       const contentItems: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [];
 
+      // 构建反馈文本
+      let feedbackText = '';
+      
       // 添加文字反馈
       if (result.interactive_feedback) {
+        feedbackText += `=== User Feedback ===\n${result.interactive_feedback}`;
+      }
+
+      // 添加附加文件路径
+      if (result.attachedFiles && result.attachedFiles.length > 0) {
+        feedbackText += `\n\n=== Attached Files ===\n`;
+        for (const filePath of result.attachedFiles) {
+          feedbackText += `${filePath}\n`;
+        }
+        feedbackText += `\nPlease read the above files to understand the context.`;
+      }
+
+      if (feedbackText) {
         contentItems.push({
           type: 'text',
-          text: `=== User Feedback ===\n${result.interactive_feedback}`,
+          text: feedbackText,
         });
       }
 
