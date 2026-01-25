@@ -123,7 +123,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   private _currentRequest: FeedbackRequest | null = null;
   private _basePort: number;
   private _activePort: number | null = null;
-  private _portScanRange = 30; // 扫描端口范围
+  private _portScanRange = 20; // 扫描端口范围
   private _seenRequestIds: Set<string> = new Set(); // 已处理过的请求 ID
 
   constructor(
