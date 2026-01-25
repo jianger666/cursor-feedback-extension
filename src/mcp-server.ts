@@ -517,21 +517,11 @@ Returns:
 
       this.httpServer.on('error', async (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
-          debugLog(`Port ${this.port} is already in use, checking if it's our MCP Server...`);
+          // 端口被占用，使用下一个端口（不关闭旧的 MCP Server，支持多项目独立运行）
+          debugLog(`Port ${this.port} is already in use, trying next port...`);
           this.httpServer?.close();
-          
-          // 尝试关闭旧的 MCP Server
-          const cleaned = await this.checkAndCleanPort(this.port);
-          if (cleaned) {
-            debugLog(`Old MCP Server closed, retrying on port ${this.port}...`);
-            // 等待端口释放
-            await new Promise(r => setTimeout(r, 300));
-            this.startHttpServer().then(resolve).catch(reject);
-          } else {
-            debugLog(`Port ${this.port} is used by another process, trying next port...`);
-            this.port++;
-            this.startHttpServer().then(resolve).catch(reject);
-          }
+          this.port++;
+          this.startHttpServer().then(resolve).catch(reject);
         } else {
           reject(err);
         }

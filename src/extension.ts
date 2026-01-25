@@ -162,11 +162,8 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         case 'checkServer':
           await this._checkServerHealth();
           break;
-        case 'selectFile':
-          await this._handleSelectFile();
-          break;
-        case 'selectFolder':
-          await this._handleSelectFolder();
+        case 'selectPath':
+          await this._handleSelectPath();
           break;
       }
     });
@@ -391,41 +388,21 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * 处理选择文件
+   * 处理选择文件/文件夹
    */
-  private async _handleSelectFile() {
+  private async _handleSelectPath() {
     const result = await vscode.window.showOpenDialog({
       canSelectMany: true,
       canSelectFiles: true,
-      canSelectFolders: false,
-      openLabel: '选择文件'
-    });
-    
-    if (result && result.length > 0) {
-      const paths = result.map(uri => uri.fsPath);
-      this._view?.webview.postMessage({
-        type: 'filesSelected',
-        payload: { paths, isFolder: false }
-      });
-    }
-  }
-
-  /**
-   * 处理选择文件夹
-   */
-  private async _handleSelectFolder() {
-    const result = await vscode.window.showOpenDialog({
-      canSelectMany: true,
-      canSelectFiles: false,
       canSelectFolders: true,
-      openLabel: '选择文件夹'
+      openLabel: '选择'
     });
     
     if (result && result.length > 0) {
       const paths = result.map(uri => uri.fsPath);
       this._view?.webview.postMessage({
         type: 'filesSelected',
-        payload: { paths, isFolder: true }
+        payload: { paths }
       });
     }
   }
@@ -725,6 +702,27 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       background: var(--vscode-button-secondaryHoverBackground);
     }
     
+    .attachment-btn[data-tooltip] {
+      position: relative;
+    }
+    
+    .attachment-btn[data-tooltip]:hover::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      bottom: 100%;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 4px 8px;
+      background: var(--vscode-editorWidget-background);
+      color: var(--vscode-editorWidget-foreground);
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 4px;
+      font-size: 11px;
+      white-space: nowrap;
+      margin-bottom: 4px;
+      z-index: 100;
+    }
+    
     .file-list {
       margin-top: 8px;
     }
@@ -807,33 +805,6 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       display: none !important;
     }
     
-    .loading-container {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100vh;
-      gap: 12px;
-    }
-    
-    .loading-spinner {
-      width: 32px;
-      height: 32px;
-      border: 3px solid var(--vscode-input-border);
-      border-top-color: var(--vscode-button-background);
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-    }
-    
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-    
-    .loading-text {
-      font-size: 12px;
-      color: var(--vscode-descriptionForeground);
-    }
-    
     .project-info {
       font-size: 11px;
       color: var(--vscode-descriptionForeground);
@@ -853,13 +824,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   </style>
 </head>
 <body>
-  <!-- Loading 状态 -->
-  <div id="loadingContainer" class="loading-container">
-    <div class="loading-spinner"></div>
-    <div class="loading-text">${i18n.loading}</div>
-  </div>
-  
-  <div id="mainContainer" class="container hidden">
+  <div class="container">
     <!-- 服务器状态 -->
     <div id="serverStatus" class="server-status">
       <span class="dot"></span>
@@ -894,13 +859,10 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         <!-- 附件区域 -->
         <div class="attachments-area">
           <div class="attachment-buttons">
-            <button id="uploadBtn" class="attachment-btn" title="${i18n.uploadImage}">
+            <button id="uploadBtn" class="attachment-btn" data-tooltip="${i18n.uploadImage}">
               🖼️
             </button>
-            <button id="selectFileBtn" class="attachment-btn" title="${i18n.selectFile}">
-              📄
-            </button>
-            <button id="selectFolderBtn" class="attachment-btn" title="${i18n.selectFolder}">
+            <button id="selectPathBtn" class="attachment-btn" data-tooltip="${i18n.selectPath}">
               📁
             </button>
           </div>
@@ -916,16 +878,6 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       <button id="submitBtn" class="submit-btn">${i18n.submit} (Ctrl+Enter)</button>
     </div>
   </div>
-  
-  <script>
-    // 初始化时隐藏 loading 显示主内容
-    function hideLoading() {
-      const loadingContainer = document.getElementById('loadingContainer');
-      const mainContainer = document.getElementById('mainContainer');
-      if (loadingContainer) loadingContainer.classList.add('hidden');
-      if (mainContainer) mainContainer.classList.remove('hidden');
-    }
-  </script>
   
   <script>
     const vscode = acquireVsCodeApi();
@@ -968,8 +920,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     const feedbackInput = document.getElementById('feedbackInput');
     const submitBtn = document.getElementById('submitBtn');
     const uploadBtn = document.getElementById('uploadBtn');
-    const selectFileBtn = document.getElementById('selectFileBtn');
-    const selectFolderBtn = document.getElementById('selectFolderBtn');
+    const selectPathBtn = document.getElementById('selectPathBtn');
     const imageInput = document.getElementById('imageInput');
     const imagePreview = document.getElementById('imagePreview');
     const fileList = document.getElementById('fileList');
@@ -990,18 +941,13 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     // 图片上传
     uploadBtn.addEventListener('click', () => imageInput.click());
     
-    // 选择文件
-    selectFileBtn.addEventListener('click', () => {
-      vscode.postMessage({ type: 'selectFile' });
-    });
-    
-    // 选择文件夹
-    selectFolderBtn.addEventListener('click', () => {
-      vscode.postMessage({ type: 'selectFolder' });
+    // 选择文件/文件夹
+    selectPathBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'selectPath' });
     });
     
     // 添加已选文件到列表
-    function addAttachedFile(path, isFolder) {
+    function addAttachedFile(path) {
       if (attachedFiles.includes(path)) return;
       attachedFiles.push(path);
       
@@ -1010,6 +956,8 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       
       const icon = document.createElement('span');
       icon.className = 'file-icon';
+      // 根据路径是否以 / 结尾或不包含扩展名来判断是否为文件夹
+      const isFolder = path.endsWith('/') || !path.split('/').pop().includes('.');
       icon.textContent = isFolder ? '📁' : '📄';
       
       const pathSpan = document.createElement('span');
@@ -1200,7 +1148,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         case 'filesSelected':
           if (message.payload.paths) {
             for (const path of message.payload.paths) {
-              addAttachedFile(path, message.payload.isFolder);
+              addAttachedFile(path);
             }
           }
           break;
@@ -1215,9 +1163,6 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     // 通知插件 WebView 已准备就绪
     vscode.postMessage({ type: 'ready' });
     vscode.postMessage({ type: 'checkServer' });
-    
-    // 隐藏 loading，显示主内容
-    hideLoading();
   </script>
 </body>
 </html>`;
@@ -1229,15 +1174,13 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   private _getI18n(lang: string): Record<string, string> {
     const translations: Record<string, Record<string, string>> = {
       'zh-CN': {
-        loading: '加载中...',
         waiting: '等待 AI 请求反馈...',
         waitingHint: '当 AI 需要您的反馈时，这里会显示输入界面',
         summary: 'AI 工作摘要',
         yourFeedback: '您的反馈',
         placeholder: '请输入您的反馈...',
         uploadImage: '上传图片',
-        selectFile: '选择文件',
-        selectFolder: '选择文件夹',
+        selectPath: '选择文件/文件夹',
         submit: '提交反馈',
         timeout: '剩余时间',
         expired: '已超时',
@@ -1246,15 +1189,13 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         disconnected: 'MCP Server 未连接',
       },
       'zh-TW': {
-        loading: '載入中...',
         waiting: '等待 AI 請求回饋...',
         waitingHint: '當 AI 需要您的回饋時，這裡會顯示輸入介面',
         summary: 'AI 工作摘要',
         yourFeedback: '您的回饋',
         placeholder: '請輸入您的回饋...',
         uploadImage: '上傳圖片',
-        selectFile: '選擇檔案',
-        selectFolder: '選擇資料夾',
+        selectPath: '選擇檔案/資料夾',
         submit: '提交回饋',
         timeout: '剩餘時間',
         expired: '已超時',
@@ -1263,15 +1204,13 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         disconnected: 'MCP Server 未連接',
       },
       'en': {
-        loading: 'Loading...',
         waiting: 'Waiting for AI feedback request...',
         waitingHint: 'The feedback interface will appear when AI needs your input',
         summary: 'AI Work Summary',
         yourFeedback: 'Your Feedback',
         placeholder: 'Enter your feedback...',
         uploadImage: 'Upload Image',
-        selectFile: 'Select File',
-        selectFolder: 'Select Folder',
+        selectPath: 'Select File/Folder',
         submit: 'Submit Feedback',
         timeout: 'Time remaining',
         expired: 'Expired',
