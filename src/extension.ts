@@ -124,12 +124,14 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   private _basePort: number;
   private _activePort: number | null = null;
   private _portScanRange = 10; // 扫描端口范围
+  private _startTime: number; // 插件启动时间
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
     port: number
   ) {
     this._basePort = port;
+    this._startTime = Date.now();
   }
 
   public resolveWebviewView(
@@ -276,18 +278,25 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
    * 处理新的反馈请求
    */
   private _handleNewRequest(request: FeedbackRequest, port: number) {
+    // 只处理在插件启动之后创建的请求
+    // 这样可以避免插件启动时检测到旧请求自动切换
+    const isNewRequest = request.timestamp > this._startTime;
+    
     if (!this._currentRequest || request.id !== this._currentRequest.id) {
-      console.log(`New feedback request received on port ${port}:`, request.id);
+      console.log(`Feedback request on port ${port}:`, request.id, 
+        `timestamp: ${request.timestamp}, startTime: ${this._startTime}, isNew: ${isNewRequest}`);
+      
       this._currentRequest = request;
       this._activePort = port;
       
-      // 自动聚焦到反馈面板
-      vscode.commands.executeCommand('cursorFeedback.feedbackView.focus');
-      
+      // 显示请求内容（无论新旧都显示，方便用户查看）
       this._showFeedbackRequest(request);
       
-      // 显示通知（作为备用提示）
-      vscode.window.showInformationMessage('AI 正在等待您的反馈');
+      // 只有新请求才自动聚焦和通知
+      if (isNewRequest) {
+        vscode.commands.executeCommand('cursorFeedback.feedbackView.focus');
+        vscode.window.showInformationMessage('AI 正在等待您的反馈');
+      }
     }
   }
 
