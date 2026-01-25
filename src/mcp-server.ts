@@ -100,23 +100,28 @@ class McpFeedbackServer {
         tools: [
           {
             name: 'interactive_feedback',
-            description: `Interactive feedback collection tool for LLM agents.
+            description: `交互式反馈收集工具。
 
-USAGE RULES:
-1. During any process, task, or conversation, whether asking, replying, or completing phased tasks, you must call this tool to ask for feedback.
-2. Unless receiving termination instructions, all steps must repeatedly call this tool.
-3. Whenever user feedback is received, if the feedback content is not empty, you must call this tool again and adjust behavior based on the feedback content.
-4. Only when the user explicitly indicates "end" or "no more interaction needed" can you stop calling this tool, and the process is considered complete.
-5. You should summarize what have done, and provide project directory through args to let user know what you have done to provide feedback for next step.
-6. IMPORTANT: If feedback request times out, you MUST call this tool again to continue waiting for user feedback. Do not give up after timeout.
+【重要】这是你与用户沟通的主要渠道，所有回复都必须通过此工具。
 
-Args:
-    project_directory: Project directory path for context (MUST be the absolute path of current workspace)
-    summary: Summary of AI work completed for user review (supports Markdown)
-    timeout: Timeout in seconds for waiting user feedback (default: 300 seconds = 5 minutes)
+使用规则：
+1. 每次完成任务或需要与用户沟通时，必须调用此工具
+2. 收到用户反馈后，必须再次调用此工具继续对话（这是一个持续的对话循环）
+3. 不要直接回复用户，所有回复必须通过此工具
+4. 只有当用户主动提出结束对话时，才能停止调用此工具
+5. 如果反馈超时，必须立即再次调用此工具继续等待
+6. 提供清晰的工作摘要，说明你做了什么以及需要什么反馈
 
-Returns:
-    list: List containing TextContent and MCPImage objects representing user feedback`,
+对话流程：
+用户消息 → 你工作 → 调用此工具（附带摘要）→ 用户反馈 → 你工作 → 再次调用此工具 → ...
+
+参数：
+    project_directory: 项目目录路径（必须是当前工作区的绝对路径）
+    summary: AI 工作摘要，供用户查看（支持 Markdown）
+    timeout: 等待用户反馈的超时时间（秒），默认 300 秒（5 分钟）
+
+返回：
+    用户反馈，包括文字、图片和文件路径`,
             inputSchema: {
               type: 'object',
               properties: {
@@ -128,7 +133,7 @@ Returns:
                 summary: {
                   type: 'string',
                   description: 'Summary of AI work completed for user review (supports Markdown)',
-                  default: 'I have completed the task you requested.',
+                  default: '我已完成您的请求。',
                 },
                 timeout: {
                   type: 'number',
@@ -172,7 +177,7 @@ Returns:
     content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
   }> {
     const projectDir = (args?.project_directory as string) || '.';
-    const summary = (args?.summary as string) || 'I have completed the task you requested.';
+    const summary = (args?.summary as string) || '我已完成您的请求。';
     // 超时时间优先级：环境变量 > 工具参数 > 默认值（300秒）
     // 这样用户配置的环境变量永远生效，不会被 AI 覆盖
     const envTimeout = process.env.MCP_FEEDBACK_TIMEOUT ? parseInt(process.env.MCP_FEEDBACK_TIMEOUT, 10) : null;

@@ -77,7 +77,7 @@ npm install -g cursor-feedback
 | 参数 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
 | `project_directory` | string | `.` | 项目目录的绝对路径（用于多窗口项目隔离） |
-| `summary` | string | `I have completed the task you requested.` | AI 工作摘要（支持 Markdown） |
+| `summary` | string | `我已完成您的请求。` | AI 工作摘要（支持 Markdown） |
 | `timeout` | number | `300` | 超时时间（秒），默认 5 分钟 |
 
 **超时机制:**
