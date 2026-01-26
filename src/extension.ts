@@ -125,12 +125,25 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   private _activePort: number | null = null;
   private _portScanRange = 20; // 扫描端口范围
   private _seenRequestIds: Set<string> = new Set(); // 已处理过的请求 ID
+  private _debugInfo: {
+    portRange: string;
+    workspacePath: string;
+    connectedPorts: number[];
+    lastStatus: string;
+    mismatchInfo?: { requestPath: string; workspacePath: string };
+  } = {
+    portRange: '',
+    workspacePath: '',
+    connectedPorts: [],
+    lastStatus: '初始化中...'
+  };
 
   constructor(
     private readonly _extensionUri: vscode.Uri,
     port: number
   ) {
     this._basePort = port;
+    this._debugInfo.portRange = `${port}-${port + this._portScanRange - 1}`;
   }
 
   public resolveWebviewView(
@@ -211,6 +224,10 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
    */
   private async _pollForFeedbackRequest() {
     try {
+      // 更新工作区路径
+      const workspacePaths = getWorkspacePaths();
+      this._debugInfo.workspacePath = workspacePaths.length > 0 ? workspacePaths[0] : '(无工作区)';
+
       // 并行扫描所有端口
       const ports = [];
       for (let i = 0; i < this._portScanRange; i++) {
@@ -219,6 +236,9 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
 
       // 并行检查所有端口
       const results = await Promise.all(ports.map(port => this._checkPortForRequest(port)));
+      
+      // 更新已连接的端口列表
+      this._debugInfo.connectedPorts = results.filter(r => r.connected).map(r => r.port);
       
       // 收集所有有效请求，按时间戳排序（最新的优先）
       const validRequests = results
@@ -229,9 +249,20 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       if (validRequests.length > 0) {
         const newest = validRequests[0];
         this._activePort = newest.port;
+        this._debugInfo.lastStatus = `找到请求 (端口 ${newest.port})`;
+        this._debugInfo.mismatchInfo = undefined;
         this._handleNewRequest(newest.request!, newest.port);
+        this._updateDebugInfo();
         return;
       }
+
+      // 更新调试状态
+      if (this._debugInfo.connectedPorts.length === 0) {
+        this._debugInfo.lastStatus = '未找到 MCP Server';
+      } else {
+        this._debugInfo.lastStatus = `已连接 ${this._debugInfo.connectedPorts.length} 个端口，无匹配请求`;
+      }
+      this._updateDebugInfo();
 
       // 检查活跃端口的请求状态（可能已被处理或超时）
       if (this._activePort && this._currentRequest) {
@@ -243,7 +274,8 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         }
       }
     } catch (error) {
-      // 服务器可能未启动，静默处理
+      this._debugInfo.lastStatus = `轮询错误: ${error}`;
+      this._updateDebugInfo();
     }
   }
 
@@ -263,11 +295,14 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       if (request) {
         const workspacePaths = getWorkspacePaths();
         const isMatch = isPathInWorkspace(request.projectDir);
-        console.log(`[Port ${port}] Request projectDir: ${request.projectDir}`);
-        console.log(`[Port ${port}] Workspace paths: ${JSON.stringify(workspacePaths)}`);
-        console.log(`[Port ${port}] isMatch: ${isMatch}`);
         
         if (!isMatch) {
+          // 记录路径不匹配信息（用于调试）
+          this._debugInfo.mismatchInfo = {
+            requestPath: request.projectDir,
+            workspacePath: workspacePaths.length > 0 ? workspacePaths[0] : '(无工作区)'
+          };
+          this._debugInfo.lastStatus = `路径不匹配 (端口 ${port})`;
           // 请求不属于当前工作区，忽略
           return { connected: true, request: null, port };
         }
@@ -371,6 +406,18 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     if (this._view) {
       this._view.webview.postMessage({
         type: 'showWaiting'
+      });
+    }
+  }
+
+  /**
+   * 更新调试信息到 WebView
+   */
+  private _updateDebugInfo() {
+    if (this._view) {
+      this._view.webview.postMessage({
+        type: 'updateDebugInfo',
+        payload: this._debugInfo
       });
     }
   }
@@ -701,6 +748,40 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       background: var(--vscode-notificationsInfoIcon-foreground);
     }
     
+    .debug-icon {
+      margin-left: auto;
+      cursor: pointer;
+      opacity: 0.6;
+      font-size: 12px;
+    }
+    
+    .debug-icon:hover {
+      opacity: 1;
+    }
+    
+    .debug-tooltip {
+      display: none;
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 4px;
+      padding: 8px 10px;
+      background: var(--vscode-editorWidget-background);
+      border: 1px solid var(--vscode-editorWidget-border);
+      border-radius: 4px;
+      font-size: 11px;
+      white-space: pre-wrap;
+      z-index: 1000;
+      min-width: 200px;
+      max-width: 300px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    }
+    
+    .debug-icon:hover + .debug-tooltip,
+    .debug-tooltip:hover {
+      display: block;
+    }
+    
     .attachments-area {
       margin-top: 10px;
     }
@@ -856,6 +937,8 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     <div id="serverStatus" class="server-status">
       <span class="dot"></span>
       <span id="serverStatusText">${i18n.checking}</span>
+      <span id="debugIcon" class="debug-icon" title="">🔍</span>
+      <div id="debugTooltip" class="debug-tooltip"></div>
     </div>
     
     <!-- 等待状态 -->
@@ -940,6 +1023,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     // DOM 元素
     const serverStatus = document.getElementById('serverStatus');
     const serverStatusText = document.getElementById('serverStatusText');
+    const debugTooltip = document.getElementById('debugTooltip');
     const waitingStatus = document.getElementById('waitingStatus');
     const feedbackForm = document.getElementById('feedbackForm');
     const summaryContent = document.getElementById('summaryContent');
@@ -1170,6 +1254,22 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
             serverStatus.classList.remove('connected');
             serverStatusText.textContent = i18n.disconnected;
           }
+          break;
+        
+        case 'updateDebugInfo':
+          const debug = message.payload;
+          let debugText = '🔍 调试信息\\n';
+          debugText += '━━━━━━━━━━━━\\n';
+          debugText += '扫描端口: ' + debug.portRange + '\\n';
+          debugText += '工作区: ' + debug.workspacePath + '\\n';
+          debugText += '已连接: ' + (debug.connectedPorts.length > 0 ? debug.connectedPorts.join(', ') : '无') + '\\n';
+          debugText += '状态: ' + debug.lastStatus;
+          if (debug.mismatchInfo) {
+            debugText += '\\n\\n⚠️ 路径不匹配\\n';
+            debugText += '请求: ' + debug.mismatchInfo.requestPath + '\\n';
+            debugText += '工作区: ' + debug.mismatchInfo.workspacePath;
+          }
+          debugTooltip.textContent = debugText;
           break;
           
         case 'filesSelected':
