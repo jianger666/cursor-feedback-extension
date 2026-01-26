@@ -66,6 +66,20 @@ npm install -g cursor-feedback
 3. 在聊天中让 AI 调用 `interactive_feedback` 工具
 4. AI 会在侧边栏显示工作摘要，等待您的反馈
 
+### 4. 配置 User Rules（推荐）
+
+为了让 AI 更好地使用 Cursor Feedback，建议在 Cursor 设置中添加以下 User Rules：
+
+```
+# Cursor Feedback 规则
+
+1. 在任何流程、任务、对话进行时，无论是询问、回复、或完成阶段性任务，皆必须调用 MCP cursor-feedback。
+2. 每当收到用户反馈，必须再次调用 MCP cursor-feedback，并根据反馈内容调整行为。
+3. 完成任务前，必须使用 MCP cursor-feedback 工具向用户询问反馈。
+```
+
+配置后，AI 会在对话过程中自动调用 Cursor Feedback 工具，实现持续的交互式对话。
+
 ## 📖 MCP 工具
 
 ### interactive_feedback

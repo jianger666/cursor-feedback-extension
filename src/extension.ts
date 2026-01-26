@@ -130,12 +130,13 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     workspacePath: string;
     connectedPorts: number[];
     lastStatus: string;
-    mismatchInfo?: { requestPath: string; workspacePath: string };
+    mismatchCount: number; // 路径不匹配的端口数量
   } = {
     portRange: '',
     workspacePath: '',
     connectedPorts: [],
-    lastStatus: '初始化中...'
+    lastStatus: '初始化中...',
+    mismatchCount: 0
   };
 
   constructor(
@@ -237,8 +238,9 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       // 并行检查所有端口
       const results = await Promise.all(ports.map(port => this._checkPortForRequest(port)));
       
-      // 更新已连接的端口列表
+      // 更新已连接的端口列表和不匹配数量
       this._debugInfo.connectedPorts = results.filter(r => r.connected).map(r => r.port);
+      this._debugInfo.mismatchCount = results.filter(r => r.mismatch).length;
       
       // 收集所有有效请求，按时间戳排序（最新的优先）
       const validRequests = results
@@ -250,7 +252,6 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         const newest = validRequests[0];
         this._activePort = newest.port;
         this._debugInfo.lastStatus = `找到请求 (端口 ${newest.port})`;
-        this._debugInfo.mismatchInfo = undefined;
         this._handleNewRequest(newest.request!, newest.port);
         this._updateDebugInfo();
         return;
@@ -259,8 +260,10 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       // 更新调试状态
       if (this._debugInfo.connectedPorts.length === 0) {
         this._debugInfo.lastStatus = '未找到 MCP Server';
+      } else if (this._debugInfo.mismatchCount > 0) {
+        this._debugInfo.lastStatus = `连接 ${this._debugInfo.connectedPorts.length} 个端口，${this._debugInfo.mismatchCount} 个路径不匹配`;
       } else {
-        this._debugInfo.lastStatus = `已连接 ${this._debugInfo.connectedPorts.length} 个端口，无匹配请求`;
+        this._debugInfo.lastStatus = `连接 ${this._debugInfo.connectedPorts.length} 个端口，无匹配请求`;
       }
       this._updateDebugInfo();
 
@@ -286,9 +289,14 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     connected: boolean;
     request: FeedbackRequest | null;
     port: number;
+    mismatch?: boolean; // 是否有请求但路径不匹配
   }> {
     try {
-      const response = await this._httpGet(`http://127.0.0.1:${port}/api/feedback/current`);
+      // 带上工作区路径，让 MCP Server 知道请求来自哪个项目
+      const workspacePaths = getWorkspacePaths();
+      const workspacePath = workspacePaths.length > 0 ? workspacePaths[0] : '';
+      const url = `http://127.0.0.1:${port}/api/feedback/current?workspace=${encodeURIComponent(workspacePath)}`;
+      const response = await this._httpGet(url);
       const request = JSON.parse(response) as FeedbackRequest | null;
       
       // 检查请求是否属于当前工作区
@@ -297,14 +305,8 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         const isMatch = isPathInWorkspace(request.projectDir);
         
         if (!isMatch) {
-          // 记录路径不匹配信息（用于调试）
-          this._debugInfo.mismatchInfo = {
-            requestPath: request.projectDir,
-            workspacePath: workspacePaths.length > 0 ? workspacePaths[0] : '(无工作区)'
-          };
-          this._debugInfo.lastStatus = `路径不匹配 (端口 ${port})`;
-          // 请求不属于当前工作区，忽略
-          return { connected: true, request: null, port };
+          // 请求不属于当前工作区，返回特殊标记
+          return { connected: true, request: null, port, mismatch: true };
         }
       }
       
@@ -1264,11 +1266,6 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
           debugText += '工作区: ' + debug.workspacePath + '\\n';
           debugText += '已连接: ' + (debug.connectedPorts.length > 0 ? debug.connectedPorts.join(', ') : '无') + '\\n';
           debugText += '状态: ' + debug.lastStatus;
-          if (debug.mismatchInfo) {
-            debugText += '\\n\\n⚠️ 路径不匹配\\n';
-            debugText += '请求: ' + debug.mismatchInfo.requestPath + '\\n';
-            debugText += '工作区: ' + debug.mismatchInfo.workspacePath;
-          }
           debugTooltip.textContent = debugText;
           break;
           

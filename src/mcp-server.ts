@@ -166,13 +166,24 @@ class McpFeedbackServer {
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
 
-      switch (name) {
-        case 'interactive_feedback':
-          return this.handleInteractiveFeedback(args);
-        case 'get_system_info':
-          return this.handleGetSystemInfo();
-        default:
-          throw new Error(`Unknown tool: ${name}`);
+      try {
+        switch (name) {
+          case 'interactive_feedback':
+            return await this.handleInteractiveFeedback(args);
+          case 'get_system_info':
+            return this.handleGetSystemInfo();
+          default:
+            return {
+              content: [{ type: 'text', text: `Unknown tool: ${name}` }],
+              isError: true,
+            };
+        }
+      } catch (error) {
+        debugLog(`Error in tool ${name}: ${error}`);
+        return {
+          content: [{ type: 'text', text: `Tool error: ${error}` }],
+          isError: true,
+        };
       }
     });
   }
@@ -191,6 +202,9 @@ class McpFeedbackServer {
     const timeout = envTimeout || (args?.timeout as number) || 300;
 
     const requestId = this.generateRequestId();
+    
+    // AI 调用 feedback 时更新活动时间
+    this.updateActivity();
     
     // 创建反馈请求
     this.currentRequest = {
@@ -444,22 +458,44 @@ class McpFeedbackServer {
   private startHttpServer(): Promise<void> {
     return new Promise((resolve, reject) => {
       this.httpServer = http.createServer((req, res) => {
-        // 更新活动时间（收到任何请求都算活动）
-        this.updateActivity();
+        // 包裹整个请求处理逻辑，防止异常导致进程崩溃
+        try {
+          // 注意：活动时间的更新已移到具体的请求处理中
+          // 只有来自匹配工作区的请求才会更新活动时间
 
-        // 设置 CORS 头
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+          // 设置 CORS 头
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-        if (req.method === 'OPTIONS') {
-          res.writeHead(200);
-          res.end();
-          return;
-        }
+          if (req.method === 'OPTIONS') {
+            res.writeHead(200);
+            res.end();
+            return;
+          }
 
-        // 获取当前反馈请求
-        if (req.method === 'GET' && req.url === '/api/feedback/current') {
+          // 获取当前反馈请求
+          if (req.method === 'GET' && req.url?.startsWith('/api/feedback/current')) {
+          // 解析 URL 参数
+          const urlObj = new URL(req.url, `http://127.0.0.1:${this.port}`);
+          const workspaceParam = urlObj.searchParams.get('workspace') || '';
+          
+          // 检查是否应该更新活动时间
+          // 只有当请求来自匹配的工作区时才更新活动时间
+          if (this.currentRequest) {
+            const normalize = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+            const normalizedWorkspace = normalize(workspaceParam);
+            const normalizedProjectDir = normalize(this.currentRequest.projectDir);
+            
+            if (normalizedWorkspace === normalizedProjectDir) {
+              // 工作区匹配，更新活动时间
+              this.updateActivity();
+            }
+            // 不匹配时不更新活动时间，这样 2 分钟后会自动退出
+          }
+          // 注意：没有 currentRequest 时也不更新活动时间
+          // 活动时间只在 AI 调用 feedback 时由 handleInteractiveFeedback 更新
+          
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify(this.currentRequest || null));
           return;
@@ -467,6 +503,9 @@ class McpFeedbackServer {
 
         // 提交反馈
         if (req.method === 'POST' && req.url === '/api/feedback/submit') {
+          // 提交反馈一定是来自正确的工作区，更新活动时间
+          this.updateActivity();
+          
           let body = '';
           req.on('data', chunk => {
             body += chunk.toString();
@@ -526,8 +565,17 @@ class McpFeedbackServer {
           return;
         }
 
-        res.writeHead(404);
-        res.end('Not Found');
+          res.writeHead(404);
+          res.end('Not Found');
+        } catch (error) {
+          debugLog(`HTTP request error: ${error}`);
+          try {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Internal server error' }));
+          } catch {
+            // 响应可能已经发送，忽略
+          }
+        }
       });
 
       this.httpServer.on('error', async (err: NodeJS.ErrnoException) => {
@@ -646,10 +694,16 @@ async function main() {
     process.exit(0);
   });
 
+  // 捕获未处理的异常，记录日志但不退出进程
   process.on('uncaughtException', (error) => {
-    debugLog(`Uncaught exception: ${error}`);
-    server.stop();
-    process.exit(1);
+    debugLog(`Uncaught exception (continuing): ${error}`);
+    // 不退出进程，让 MCP 连接保持
+  });
+
+  // 捕获未处理的 Promise 拒绝
+  process.on('unhandledRejection', (reason, promise) => {
+    debugLog(`Unhandled rejection (continuing): ${reason}`);
+    // 不退出进程，让 MCP 连接保持
   });
 
   await server.start();
