@@ -738,8 +738,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       content: attr(data-tooltip);
       position: absolute;
       bottom: 100%;
-      left: 50%;
-      transform: translateX(-50%);
+      right: 0;
       padding: 4px 8px;
       background: var(--vscode-editorWidget-background);
       color: var(--vscode-editorWidget-foreground);
