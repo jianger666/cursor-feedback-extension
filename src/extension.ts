@@ -732,6 +732,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       gap: 6px;
       font-size: 11px;
       padding: 6px 10px;
+      position: relative;
       background: var(--vscode-textBlockQuote-background);
       border-radius: 4px;
       margin-bottom: 12px;
@@ -761,10 +762,9 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     
     .debug-tooltip {
       display: none;
-      position: absolute;
-      top: 100%;
-      right: 0;
-      margin-top: 4px;
+      position: fixed;
+      top: 50px;
+      right: 10px;
       padding: 8px 10px;
       background: var(--vscode-editorWidget-background);
       border: 1px solid var(--vscode-editorWidget-border);
@@ -772,8 +772,8 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       font-size: 11px;
       white-space: pre-wrap;
       z-index: 1000;
-      min-width: 200px;
-      max-width: 300px;
+      min-width: 180px;
+      max-width: 280px;
       box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     }
     
