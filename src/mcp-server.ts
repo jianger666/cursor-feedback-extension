@@ -75,6 +75,13 @@ class McpFeedbackServer {
   // 当前反馈请求
   private currentRequest: FeedbackRequest | null = null;
 
+  // 所属工作区（只在 AI 调用 feedback 时设置）
+  // 只有来自同一工作区的轮询才会更新活动时间
+  private ownerWorkspace: string | null = null;
+
+  // Server 启动时间（用于区分同一项目的新旧 Server）
+  private readonly startTime: number = Date.now();
+
   // 最后活动时间（用于自动退出）
   private lastActivityTime: number = Date.now();
   // 自动退出检查定时器
@@ -202,6 +209,11 @@ class McpFeedbackServer {
     const timeout = envTimeout || (args?.timeout as number) || 300;
 
     const requestId = this.generateRequestId();
+    
+    // AI 调用 feedback 时设置 ownerWorkspace（这是唯一正确的时机）
+    const normalize = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    this.ownerWorkspace = normalize(projectDir);
+    debugLog(`Owner workspace set to: ${this.ownerWorkspace}`);
     
     // AI 调用 feedback 时更新活动时间
     this.updateActivity();
@@ -479,25 +491,31 @@ class McpFeedbackServer {
           // 解析 URL 参数
           const urlObj = new URL(req.url, `http://127.0.0.1:${this.port}`);
           const workspaceParam = urlObj.searchParams.get('workspace') || '';
+          const latestStartTimeParam = urlObj.searchParams.get('latestStartTime');
+          const latestStartTime = latestStartTimeParam ? parseInt(latestStartTimeParam, 10) : 0;
+          
+          const normalize = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+          const normalizedWorkspace = normalize(workspaceParam);
           
           // 检查是否应该更新活动时间
-          // 只有当请求来自匹配的工作区时才更新活动时间
-          if (this.currentRequest) {
-            const normalize = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-            const normalizedWorkspace = normalize(workspaceParam);
-            const normalizedProjectDir = normalize(this.currentRequest.projectDir);
-            
-            if (normalizedWorkspace === normalizedProjectDir) {
-              // 工作区匹配，更新活动时间
-              this.updateActivity();
-            }
-            // 不匹配时不更新活动时间，这样 2 分钟后会自动退出
+          // 条件 1：工作区匹配（或未设置 ownerWorkspace）
+          // 条件 2：是最新的 Server（startTime >= latestStartTime）
+          // 条件 3：latestStartTime > 0（插件已完成首轮扫描）
+          const isWorkspaceMatch = !this.ownerWorkspace || normalizedWorkspace === this.ownerWorkspace;
+          const isLatestServer = latestStartTime > 0 && this.startTime >= latestStartTime;
+          
+          if (isWorkspaceMatch && isLatestServer) {
+            this.updateActivity();
           }
-          // 注意：没有 currentRequest 时也不更新活动时间
-          // 活动时间只在 AI 调用 feedback 时由 handleInteractiveFeedback 更新
+          // 不满足条件时不更新活动时间，旧的 Server 会在 2 分钟后自动退出
           
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify(this.currentRequest || null));
+          // 返回当前请求、ownerWorkspace 和 startTime
+          res.end(JSON.stringify({
+            request: this.currentRequest || null,
+            ownerWorkspace: this.ownerWorkspace,
+            startTime: this.startTime,
+          }));
           return;
         }
 
@@ -606,10 +624,25 @@ class McpFeedbackServer {
 
   /**
    * 启动无活动自动退出检查
+   * 
+   * 退出条件：
+   * 1. 没有 currentRequest（即没有请求在等待用户反馈）
+   * 2. 超过 2 分钟没有来自对应工作区的轮询
+   * 
+   * 这样：
+   * - 窗口打开时：插件轮询会更新活动时间，不会退出
+   * - 等待反馈时：有 currentRequest，不会退出
+   * - 窗口关闭后：没有轮询，2 分钟后退出
    */
   private startInactivityCheck(): void {
     // 每分钟检查一次
     this.inactivityCheckInterval = setInterval(() => {
+      // 如果有请求正在等待用户反馈，绝对不退出
+      if (this.currentRequest) {
+        debugLog('Request pending, skipping inactivity check');
+        return;
+      }
+      
       const inactiveTime = Date.now() - this.lastActivityTime;
       if (inactiveTime > this.INACTIVITY_TIMEOUT) {
         debugLog(`No activity for ${Math.round(inactiveTime / 1000)}s, auto-exiting...`);
