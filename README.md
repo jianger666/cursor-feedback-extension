@@ -76,9 +76,10 @@ npm install -g cursor-feedback
 1. 在任何流程、任务、对话进行时，无论是询问、回复、或完成阶段性任务，皆必须调用 MCP cursor-feedback。
 2. 每当收到用户反馈，必须再次调用 MCP cursor-feedback，并根据反馈内容调整行为。
 3. 完成任务前，必须使用 MCP cursor-feedback 工具向用户询问反馈。
+4. 所有需要展示给用户的内容必须全部通过 cursor-feedback 的 summary 参数传递，禁止在右侧对话窗口显示任何回复内容。
 ```
 
-配置后，AI 会在对话过程中自动调用 Cursor Feedback 工具，实现持续的交互式对话。
+配置后，AI 会在对话过程中自动调用 Cursor Feedback 工具，所有回复内容都会通过侧边栏展示，实现持续的交互式对话。
 
 ## 📖 MCP 工具
 
