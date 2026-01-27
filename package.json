@@ -2,7 +2,7 @@
   "name": "cursor-feedback",
   "displayName": "Cursor Feedback",
   "description": "Interactive feedback collection for AI agents in Cursor/VS Code - MCP Server with sidebar UI",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "jianger666",
   "license": "MIT",
   "repository": {
@@ -67,22 +67,12 @@
           "name": "Feedback"
         }
       ]
-    },
-    "configuration": {
-      "title": "Cursor Feedback",
-      "properties": {
-        "cursorFeedback.language": {
-          "type": "string",
-          "enum": ["zh-CN", "zh-TW", "en"],
-          "default": "zh-CN",
-          "description": "Interface language (zh-CN: 简体中文, zh-TW: 繁體中文, en: English)"
-        }
-      }
     }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ && npm run copy-webview",
+    "copy-webview": "mkdir -p dist/webview && cp src/webview/* dist/webview/",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "start:mcp": "node dist/mcp-server.js",

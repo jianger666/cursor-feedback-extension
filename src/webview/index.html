@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="{{CSP}}">
+  <title>Cursor Feedback</title>
+  <script src="{{MARKED_JS_URI}}"></script>
+  <link rel="stylesheet" href="{{STYLES_CSS_URI}}">
+</head>
+<body>
+  <div class="container">
+    <!-- 服务器状态 -->
+    <div id="serverStatus" class="server-status">
+      <span class="dot"></span>
+      <span id="serverStatusText">检查连接...</span>
+      <span id="debugIcon" class="debug-icon">🔍</span>
+      <div id="debugTooltip" class="debug-tooltip"></div>
+    </div>
+    
+    <!-- 等待状态 -->
+    <div id="waitingStatus" class="status waiting">
+      <div class="status-icon">⏳</div>
+      <p>等待 AI 请求反馈...</p>
+      <p style="font-size: 11px; margin-top: 10px; opacity: 0.8;">当 AI 需要您的反馈时，这里会显示输入界面</p>
+    </div>
+    
+    <!-- 反馈表单 -->
+    <div id="feedbackForm" class="hidden">
+      <!-- AI 摘要 -->
+      <div class="section">
+        <div class="section-title">📋 AI 工作摘要</div>
+        <div id="summaryContent" class="summary-content"></div>
+        <div id="projectInfo" class="project-info"></div>
+      </div>
+      
+      <!-- 反馈输入 -->
+      <div class="section">
+        <div class="section-title">💬 您的反馈</div>
+        <textarea id="feedbackInput" class="feedback-input" placeholder="请输入您的反馈..."></textarea>
+        
+        <!-- 附件区域 -->
+        <div class="attachments-area">
+          <div class="attachment-buttons">
+            <button id="uploadBtn" class="attachment-btn" data-tooltip="上传图片">🖼️</button>
+            <button id="selectPathBtn" class="attachment-btn" data-tooltip="选择文件/文件夹">📁</button>
+          </div>
+          <input type="file" id="imageInput" accept="image/*" multiple class="hidden">
+          <div id="imagePreview" class="image-preview"></div>
+          <div id="fileList" class="file-list"></div>
+        </div>
+        
+        <div id="timeoutInfo" class="timeout-info"></div>
+      </div>
+      
+      <!-- 提交按钮 -->
+      <button id="submitBtn" class="submit-btn">提交反馈 (Ctrl+Enter)</button>
+    </div>
+  </div>
+  
+  <script src="{{SCRIPT_JS_URI}}"></script>
+</body>
+</html>
