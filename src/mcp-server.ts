@@ -79,15 +79,8 @@ class McpFeedbackServer {
   // 只有来自同一工作区的轮询才会更新活动时间
   private ownerWorkspace: string | null = null;
 
-  // Server 启动时间（用于区分同一项目的新旧 Server）
+  // Server 启动时间
   private readonly startTime: number = Date.now();
-
-  // 最后活动时间（用于自动退出）
-  private lastActivityTime: number = Date.now();
-  // 自动退出检查定时器
-  private inactivityCheckInterval: NodeJS.Timeout | null = null;
-  // 无活动退出时间（2 分钟）
-  private readonly INACTIVITY_TIMEOUT = 2 * 60 * 1000;
 
   constructor(port: number = 8766) {
     this.port = port;
@@ -214,9 +207,6 @@ class McpFeedbackServer {
     const normalize = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
     this.ownerWorkspace = normalize(projectDir);
     debugLog(`Owner workspace set to: ${this.ownerWorkspace}`);
-    
-    // AI 调用 feedback 时更新活动时间
-    this.updateActivity();
     
     // 创建反馈请求
     this.currentRequest = {
@@ -488,27 +478,6 @@ class McpFeedbackServer {
 
           // 获取当前反馈请求
           if (req.method === 'GET' && req.url?.startsWith('/api/feedback/current')) {
-          // 解析 URL 参数
-          const urlObj = new URL(req.url, `http://127.0.0.1:${this.port}`);
-          const workspaceParam = urlObj.searchParams.get('workspace') || '';
-          const latestStartTimeParam = urlObj.searchParams.get('latestStartTime');
-          const latestStartTime = latestStartTimeParam ? parseInt(latestStartTimeParam, 10) : 0;
-          
-          const normalize = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-          const normalizedWorkspace = normalize(workspaceParam);
-          
-          // 检查是否应该更新活动时间
-          // 条件 1：工作区匹配（或未设置 ownerWorkspace）
-          // 条件 2：是最新的 Server（startTime >= latestStartTime）
-          // 条件 3：latestStartTime > 0（插件已完成首轮扫描）
-          const isWorkspaceMatch = !this.ownerWorkspace || normalizedWorkspace === this.ownerWorkspace;
-          const isLatestServer = latestStartTime > 0 && this.startTime >= latestStartTime;
-          
-          if (isWorkspaceMatch && isLatestServer) {
-            this.updateActivity();
-          }
-          // 不满足条件时不更新活动时间，旧的 Server 会在 2 分钟后自动退出
-          
           res.writeHead(200, { 'Content-Type': 'application/json' });
           // 返回当前请求、ownerWorkspace 和 startTime
           res.end(JSON.stringify({
@@ -521,9 +490,6 @@ class McpFeedbackServer {
 
         // 提交反馈
         if (req.method === 'POST' && req.url === '/api/feedback/submit') {
-          // 提交反馈一定是来自正确的工作区，更新活动时间
-          this.updateActivity();
-          
           let body = '';
           req.on('data', chunk => {
             body += chunk.toString();
@@ -616,43 +582,6 @@ class McpFeedbackServer {
   }
 
   /**
-   * 更新最后活动时间
-   */
-  private updateActivity(): void {
-    this.lastActivityTime = Date.now();
-  }
-
-  /**
-   * 启动无活动自动退出检查
-   * 
-   * 退出条件：
-   * 1. 没有 currentRequest（即没有请求在等待用户反馈）
-   * 2. 超过 2 分钟没有来自对应工作区的轮询
-   * 
-   * 这样：
-   * - 窗口打开时：插件轮询会更新活动时间，不会退出
-   * - 等待反馈时：有 currentRequest，不会退出
-   * - 窗口关闭后：没有轮询，2 分钟后退出
-   */
-  private startInactivityCheck(): void {
-    // 每分钟检查一次
-    this.inactivityCheckInterval = setInterval(() => {
-      // 如果有请求正在等待用户反馈，绝对不退出
-      if (this.currentRequest) {
-        debugLog('Request pending, skipping inactivity check');
-        return;
-      }
-      
-      const inactiveTime = Date.now() - this.lastActivityTime;
-      if (inactiveTime > this.INACTIVITY_TIMEOUT) {
-        debugLog(`No activity for ${Math.round(inactiveTime / 1000)}s, auto-exiting...`);
-        this.stop();
-        process.exit(0);
-      }
-    }, 60 * 1000);
-  }
-
-  /**
    * 启动服务器
    */
   async start(): Promise<void> {
@@ -666,11 +595,7 @@ class McpFeedbackServer {
       const transport = new StdioServerTransport();
       await this.server.connect(transport);
       
-      // 启动无活动自动退出检查
-      this.startInactivityCheck();
-      
       debugLog('MCP Server started successfully');
-      debugLog(`Auto-exit after ${this.INACTIVITY_TIMEOUT / 1000}s of inactivity`);
       debugLog('Waiting for tool calls from AI agent...');
     } catch (error) {
       debugLog(`Failed to start server: ${error}`);
@@ -683,12 +608,6 @@ class McpFeedbackServer {
    */
   stop(): void {
     debugLog('Stopping server...');
-    
-    // 清理无活动检查定时器
-    if (this.inactivityCheckInterval) {
-      clearInterval(this.inactivityCheckInterval);
-      this.inactivityCheckInterval = null;
-    }
 
     // 关闭 HTTP 服务器
     if (this.httpServer) {
@@ -725,6 +644,20 @@ async function main() {
     debugLog('Received SIGTERM');
     server.stop();
     process.exit(0);
+  });
+
+  // 监听 stdin 关闭（Cursor 关闭时会触发）
+  process.stdin.on('close', () => {
+    debugLog('stdin closed, exiting...');
+    server.stop();
+    // 给 100ms 缓冲后强制退出
+    setTimeout(() => process.exit(0), 100);
+  });
+
+  process.stdin.on('end', () => {
+    debugLog('stdin ended, exiting...');
+    server.stop();
+    setTimeout(() => process.exit(0), 100);
   });
 
   // 捕获未处理的异常，记录日志但不退出进程

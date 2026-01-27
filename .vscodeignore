@@ -7,4 +7,5 @@ node_modules/**
 *.map
 tsconfig.json
 *.ts
+.env
 !dist/**

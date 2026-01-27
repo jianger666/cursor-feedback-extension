@@ -125,21 +125,18 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   private _activePort: number | null = null;
   private _portScanRange = 20; // 扫描端口范围
   private _seenRequestIds: Set<string> = new Set(); // 已处理过的请求 ID
-  private _latestServerStartTime: number = 0; // 当前工作区已知的最新 Server 启动时间
   private _debugInfo: {
     portRange: string;
     workspacePath: string;
-    connectedPorts: number[];
+    connectedPorts: number[]; // 所有窗口使用的端口
+    activePort: number | null; // 当前项目监听的端口
     lastStatus: string;
-    mismatchCount: number; // 路径不匹配的端口数量
-    activePort: number | null; // 当前活跃端口
   } = {
     portRange: '',
     workspacePath: '',
     connectedPorts: [],
-    lastStatus: '初始化中...',
-    mismatchCount: 0,
-    activePort: null
+    activePort: null,
+    lastStatus: '初始化中...'
   };
 
   constructor(
@@ -224,16 +221,51 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
 
   /**
    * 轮询检查是否有新的反馈请求
-   * 优化：如果已有活跃端口，只轮询该端口；否则扫描所有端口
+   * 优化：如果已有活跃端口，先尝试该端口；失败则扫描所有端口
    */
   private async _pollForFeedbackRequest() {
     try {
       // 更新工作区路径
       const workspacePaths = getWorkspacePaths();
       this._debugInfo.workspacePath = workspacePaths.length > 0 ? workspacePaths[0] : '(无工作区)';
+      const currentWorkspace = workspacePaths[0] || '';
+      const normalize = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+      const normalizedCurrentWorkspace = normalize(currentWorkspace);
 
-      // 始终扫描所有端口，确保能检测到新 Server
-      // 不再使用活跃端口优化，因为它会导致错过新 Server 的请求
+      // 如果有活跃端口，先尝试只轮询该端口
+      if (this._activePort) {
+        const result = await this._checkPortForRequest(this._activePort);
+        
+        // 检查是否仍然是我们的 Server
+        if (result.connected) {
+          const serverOwner = result.ownerWorkspace ? normalize(result.ownerWorkspace) : '';
+          const isMyServer = !serverOwner || serverOwner === normalizedCurrentWorkspace;
+          
+          if (isMyServer) {
+            // 端口仍然有效，保持使用
+            this._debugInfo.connectedPorts = [this._activePort];
+            this._debugInfo.activePort = this._activePort;
+            
+            if (result.request && !this._seenRequestIds.has(result.request.id)) {
+              this._debugInfo.lastStatus = `监听端口 ${this._activePort}`;
+              this._handleNewRequest(result.request, this._activePort);
+              this._updateDebugInfo();
+              return;
+            }
+            
+            // 端口有效但无新请求，继续保持连接
+            this._debugInfo.lastStatus = `监听端口 ${this._activePort}`;
+            this._updateDebugInfo();
+            return;
+          }
+        }
+        
+        // 活跃端口失效（连接失败或工作区不匹配），重置并扫描所有端口
+        this._activePort = null;
+        this._debugInfo.activePort = null;
+      }
+
+      // 扫描所有端口
       const ports = [];
       for (let i = 0; i < this._portScanRange; i++) {
         ports.push(this._basePort + i);
@@ -242,45 +274,21 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       // 并行检查所有端口
       const results = await Promise.all(ports.map(port => this._checkPortForRequest(port)));
       
-      // 更新已连接的端口列表和不匹配数量
+      // 更新已连接的端口列表
       this._debugInfo.connectedPorts = results.filter(r => r.connected).map(r => r.port);
-      this._debugInfo.mismatchCount = results.filter(r => r.mismatch).length;
       
-      // 找出同一工作区中 startTime 最大的 Server
-      const currentWorkspace = getWorkspacePaths()[0] || '';
-      const normalize = (p: string) => p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-      const normalizedCurrentWorkspace = normalize(currentWorkspace);
-      
-      let maxStartTime = 0;
-      for (const r of results) {
-        if (r.connected && r.startTime) {
-          // 检查是否属于当前工作区（ownerWorkspace 匹配或未设置）
-          const serverOwner = r.ownerWorkspace ? normalize(r.ownerWorkspace) : '';
-          const isMyServer = !serverOwner || serverOwner === normalizedCurrentWorkspace;
-          if (isMyServer && r.startTime > maxStartTime) {
-            maxStartTime = r.startTime;
-          }
+      // 找出属于当前工作区的请求
+      const myRequests = results.filter(r => {
+        if (!r.request || this._seenRequestIds.has(r.request.id)) {
+          return false;
         }
-      }
-      this._latestServerStartTime = maxStartTime;
-      
-      // 收集所有有效请求
-      // 按请求的 timestamp 和 Server 的 startTime 排序，优先显示最新的
-      const validRequests = results
-        .filter(r => r.request && !this._seenRequestIds.has(r.request.id))
-        .sort((a, b) => {
-          // 首先按请求的 timestamp 排序（新的优先）
-          const timestampDiff = b.request!.timestamp - a.request!.timestamp;
-          if (timestampDiff !== 0) {
-            return timestampDiff;
-          }
-          // timestamp 相同时，按 Server 的 startTime 排序（新的优先）
-          return (b.startTime || 0) - (a.startTime || 0);
-        });
+        const serverOwner = r.ownerWorkspace ? normalize(r.ownerWorkspace) : '';
+        return !serverOwner || serverOwner === normalizedCurrentWorkspace;
+      }).sort((a, b) => b.request!.timestamp - a.request!.timestamp);
       
       // 处理最新的请求
-      if (validRequests.length > 0) {
-        const newest = validRequests[0];
+      if (myRequests.length > 0) {
+        const newest = myRequests[0];
         this._activePort = newest.port;
         this._debugInfo.activePort = newest.port;
         this._debugInfo.lastStatus = `找到请求 (端口 ${newest.port})`;
@@ -289,25 +297,21 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
-      // 没有新的有效请求时，检查是否有当前正在处理的请求
+      // 没有新请求，检查是否有当前请求
       if (this._currentRequest && this._activePort) {
-        // 保持当前活跃端口
         this._debugInfo.activePort = this._activePort;
         this._debugInfo.lastStatus = `监听端口 ${this._activePort}`;
         this._updateDebugInfo();
         return;
       }
       
-      // 确实没有任何请求，重置活跃端口
+      // 没有任何请求
       this._debugInfo.activePort = null;
       
-      // 更新调试状态
       if (this._debugInfo.connectedPorts.length === 0) {
         this._debugInfo.lastStatus = '未找到 MCP Server';
-      } else if (this._debugInfo.mismatchCount > 0) {
-        this._debugInfo.lastStatus = `连接 ${this._debugInfo.connectedPorts.length} 个端口，${this._debugInfo.mismatchCount} 个路径不匹配`;
       } else {
-        this._debugInfo.lastStatus = `连接 ${this._debugInfo.connectedPorts.length} 个端口，无匹配请求`;
+        this._debugInfo.lastStatus = `已连接 ${this._debugInfo.connectedPorts.length} 个端口，等待请求`;
       }
       this._updateDebugInfo();
     } catch (error) {
@@ -328,10 +332,10 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     startTime?: number; // Server 的启动时间
   }> {
     try {
-      // 带上工作区路径和已知的最新 startTime
+      // 带上工作区路径用于匹配
       const workspacePaths = getWorkspacePaths();
       const workspacePath = workspacePaths.length > 0 ? workspacePaths[0] : '';
-      const url = `http://127.0.0.1:${port}/api/feedback/current?workspace=${encodeURIComponent(workspacePath)}&latestStartTime=${this._latestServerStartTime}`;
+      const url = `http://127.0.0.1:${port}/api/feedback/current?workspace=${encodeURIComponent(workspacePath)}`;
       const response = await this._httpGet(url);
       const parsed = JSON.parse(response);
       
