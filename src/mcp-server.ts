@@ -114,28 +114,32 @@ class McpFeedbackServer {
 使用规则：
 1. 每次完成任务或需要与用户沟通时，必须调用此工具
 2. 收到用户反馈后，必须再次调用此工具继续对话（这是一个持续的对话循环）
-3. 不要直接回复用户，所有回复必须通过此工具
-4. 只有当用户主动提出结束对话时，才能停止调用此工具
+3. 不要直接回复用户，所有回复必须通过此工具的 summary 参数
+4. 只有当用户明确提出结束对话时，才能停止调用此工具
 5. 如果反馈超时，必须立即再次调用此工具继续等待
 6. 提供清晰的工作摘要，说明你做了什么以及需要什么反馈
 
 对话流程：
 用户消息 → 你工作 → 调用此工具（附带摘要）→ 用户反馈 → 你工作 → 再次调用此工具 → ...
 
+返回值处理【必须遵守】：
+- 如果返回包含 "timeout" 或 "cancelled" → 必须立即重新调用此工具继续等待
+- 如果用户明确说"结束/停止/不聊了"等 → 停止调用
+- 其他情况 → 处理用户反馈后再次调用此工具
+
 参数：
-    project_directory: 项目目录路径（必须是当前工作区的绝对路径）
+    project_directory: 【必填】项目目录的绝对路径，用于正确匹配项目窗口
     summary: AI 工作摘要，供用户查看（支持 Markdown）
     timeout: 等待用户反馈的超时时间（秒），默认 300 秒（5 分钟）
 
 返回：
-    用户反馈，包括文字、图片和文件路径`,
+    用户反馈内容（文字/图片/文件路径），或 timeout/cancelled 状态`,
             inputSchema: {
               type: 'object',
               properties: {
                 project_directory: {
                   type: 'string',
-                  description: 'Project directory path for context (MUST be the absolute path of current workspace)',
-                  default: '.',
+                  description: 'Project directory absolute path (REQUIRED - must be the absolute path of current workspace for correct project matching)',
                 },
                 summary: {
                   type: 'string',
@@ -148,6 +152,7 @@ class McpFeedbackServer {
                   default: 300,
                 },
               },
+              required: ['project_directory'],
             },
           },
           {
