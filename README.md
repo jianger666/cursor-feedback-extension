@@ -28,11 +28,9 @@
 
 #### 方式 A：一键安装（推荐）
 
-复制以下链接在浏览器地址栏打开，自动配置 MCP Server：
+点击下方按钮，自动配置 MCP Server：
 
-```
-cursor://anysphere.cursor-deeplink/mcp/install?name=cursor-feedback&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImN1cnNvci1mZWVkYmFja0BsYXRlc3QiXX0=
-```
+[![Install MCP Server](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=cursor-feedback&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImN1cnNvci1mZWVkYmFja0BsYXRlc3QiXX0%3D)
 
 #### 方式 B：手动配置
 
