@@ -26,9 +26,20 @@
 
 ### 2. 配置 MCP Server
 
-在 Cursor 的 MCP 配置文件中添加（`~/.cursor/mcp.json`）：
+#### 方式 A：一键安装（推荐）
 
-#### 方式 A：使用 npx（推荐）
+点击下方链接，自动配置 MCP Server：
+
+[![Add to Cursor](https://img.shields.io/badge/Add%20to-Cursor-blue?style=for-the-badge&logo=cursor)](cursor://anysphere.cursor-deeplink/mcp/install?name=cursor-feedback&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImN1cnNvci1mZWVkYmFja0BsYXRlc3QiXX0=)
+
+或复制链接在浏览器打开：
+```
+cursor://anysphere.cursor-deeplink/mcp/install?name=cursor-feedback&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImN1cnNvci1mZWVkYmFja0BsYXRlc3QiXX0=
+```
+
+#### 方式 B：手动配置
+
+在 Cursor 的 MCP 配置文件中添加（`~/.cursor/mcp.json`）：
 
 ```json
 {
@@ -41,7 +52,7 @@
 }
 ```
 
-#### 方式 B：全局安装
+#### 方式 C：全局安装
 
 ```bash
 npm install -g cursor-feedback
@@ -154,9 +165,10 @@ npm install -g cursor-feedback
 
 | 环境变量 | 默认值 | 描述 |
 |---------|--------|------|
-| `MCP_FEEDBACK_TIMEOUT` | `300` | 超时时间（秒），默认 5 分钟。超时后 AI 会自动重新请求反馈 |
+| `MCP_FEEDBACK_TIMEOUT` | `300` | 超时时间（秒），默认 5 分钟 |
+| `MCP_AUTO_RETRY` | `true` | 超时后是否提示 AI 自动重试。设为 `false` 可禁用自动重试指示 |
 
-> **超时机制**：如果用户在超时时间内没有响应，AI 会收到超时通知并自动重新调用 feedback 工具继续等待。这样即使您暂时离开，回来后 AI 仍会等待您的反馈。
+> **超时机制**：如果用户在超时时间内没有响应，AI 会收到超时通知。默认情况下，返回消息会包含重试指示，AI 会自动重新调用 feedback 工具继续等待。如果您不希望 AI 自动重试，可以设置 `MCP_AUTO_RETRY=false`。
 
 ## 🏗️ 架构
 

@@ -35,6 +35,7 @@
   const imagePreview = document.getElementById('imagePreview');
   const fileList = document.getElementById('fileList');
   const timeoutInfo = document.getElementById('timeoutInfo');
+  const toggleKeyModeBtn = document.getElementById('toggleKeyModeBtn');
 
   let uploadedImages = [];
   let attachedFiles = [];
@@ -43,6 +44,41 @@
   let requestTimestamp = 0;
   let requestTimeout = 300;
   let countdownInterval = null;
+
+  // 快捷键模式：false = Ctrl+Enter 提交（默认），true = Enter 提交
+  let enterToSubmit = localStorage.getItem('cursorFeedback_enterToSubmit') === 'true';
+
+  // 更新快捷键模式 UI
+  function updateKeyModeUI() {
+    if (enterToSubmit) {
+      submitBtn.textContent = 'Enter 提交 · Shift+Enter 换行';
+      toggleKeyModeBtn.classList.add('enter-mode');
+      toggleKeyModeBtn.title = '点击切换为 Ctrl+Enter 提交';
+    } else {
+      submitBtn.textContent = 'Ctrl+Enter 提交 · Enter 换行';
+      toggleKeyModeBtn.classList.remove('enter-mode');
+      toggleKeyModeBtn.title = '点击切换为 Enter 提交';
+    }
+  }
+
+  // 初始化快捷键模式 UI
+  updateKeyModeUI();
+
+  // 切换快捷键模式
+  toggleKeyModeBtn.addEventListener('click', () => {
+    enterToSubmit = !enterToSubmit;
+    localStorage.setItem('cursorFeedback_enterToSubmit', enterToSubmit.toString());
+    updateKeyModeUI();
+  });
+
+  // 输入法组合状态（用于中文等输入法兼容）
+  let isComposing = false;
+  feedbackInput.addEventListener('compositionstart', () => {
+    isComposing = true;
+  });
+  feedbackInput.addEventListener('compositionend', () => {
+    isComposing = false;
+  });
 
   // 恢复输入框文本
   if (previousState?.text) {
@@ -187,7 +223,24 @@
 
   submitBtn.addEventListener('click', submitFeedback);
   feedbackInput.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') submitFeedback();
+    // 如果正在使用输入法（如中文输入），不触发提交
+    if (isComposing || e.isComposing) return;
+
+    if (e.key === 'Enter') {
+      if (enterToSubmit) {
+        // Enter 提交模式：Enter 提交，Shift+Enter 换行
+        if (!e.shiftKey) {
+          e.preventDefault();
+          submitFeedback();
+        }
+      } else {
+        // Ctrl+Enter 提交模式：Ctrl+Enter 提交，Enter 换行
+        if (e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          submitFeedback();
+        }
+      }
+    }
   });
 
   // 接收消息

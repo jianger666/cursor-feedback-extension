@@ -116,16 +116,10 @@ class McpFeedbackServer {
 2. 收到用户反馈后，必须再次调用此工具继续对话（这是一个持续的对话循环）
 3. 不要直接回复用户，所有回复必须通过此工具的 summary 参数
 4. 只有当用户明确提出结束对话时，才能停止调用此工具
-5. 如果反馈超时，必须立即再次调用此工具继续等待
-6. 提供清晰的工作摘要，说明你做了什么以及需要什么反馈
+5. 提供清晰的工作摘要，说明你做了什么以及需要什么反馈
 
 对话流程：
 用户消息 → 你工作 → 调用此工具（附带摘要）→ 用户反馈 → 你工作 → 再次调用此工具 → ...
-
-返回值处理【必须遵守】：
-- 如果返回包含 "timeout" 或 "cancelled" → 必须立即重新调用此工具继续等待
-- 如果用户明确说"结束/停止/不聊了"等 → 停止调用
-- 其他情况 → 处理用户反馈后再次调用此工具
 
 参数：
     project_directory: 【必填】项目目录的绝对路径，用于正确匹配项目窗口
@@ -198,9 +192,23 @@ class McpFeedbackServer {
    */
   private async handleInteractiveFeedback(args: Record<string, unknown> | undefined): Promise<{
     content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+    isError?: boolean;
   }> {
-    const projectDir = (args?.project_directory as string) || '.';
-    const summary = (args?.summary as string) || '我已完成您的请求。';
+    // 参数校验：project_directory 是必填项
+    if (!args?.project_directory) {
+      const receivedParams = JSON.stringify(args || {});
+      return {
+        content: [{
+          type: 'text',
+          text: `参数错误：缺少必填参数 project_directory。请查看 interactive_feedback 工具描述后使用正确参数重新调用。\n\n你传入的参数：${receivedParams}`,
+        }],
+        isError: true,
+      };
+    }
+
+    const projectDir = args.project_directory as string;
+    // summary 支持别名 message
+    const summary = (args?.summary as string) || (args?.message as string) || '我已完成您的请求。';
     // 超时时间优先级：环境变量 > 工具参数 > 默认值（300秒）
     // 这样用户配置的环境变量永远生效，不会被 AI 覆盖
     const envTimeout = process.env.MCP_FEEDBACK_TIMEOUT ? parseInt(process.env.MCP_FEEDBACK_TIMEOUT, 10) : null;
@@ -234,11 +242,16 @@ class McpFeedbackServer {
 
       if (!result) {
         debugLog('Feedback request timed out or cancelled');
+        // MCP_AUTO_RETRY 环境变量控制是否显示重试指示，默认 true
+        const autoRetry = process.env.MCP_AUTO_RETRY !== 'false';
+        const timeoutMessage = autoRetry
+          ? 'User cancelled the feedback or timeout. 【必须立即重新调用此工具继续等待用户反馈】'
+          : 'User cancelled the feedback or timeout.';
         return {
           content: [
             {
               type: 'text',
-              text: 'User cancelled the feedback or timeout.',
+              text: timeoutMessage,
             },
           ],
         };

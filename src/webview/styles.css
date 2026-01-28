@@ -128,16 +128,21 @@ body {
 }
 
 
+.submit-group {
+  display: flex;
+  gap: 8px;
+}
+
 .submit-btn {
-  width: 100%;
-  padding: 12px;
+  flex: 1;
+  padding: 10px 12px;
   background: var(--vscode-button-background);
   color: var(--vscode-button-foreground);
   border: none;
   border-radius: 6px;
   cursor: pointer;
-  font-weight: 600;
-  font-size: 14px;
+  font-weight: 500;
+  font-size: 12px;
   transition: background 0.15s;
 }
 
@@ -148,6 +153,32 @@ body {
 .submit-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.toggle-key-mode-btn {
+  width: 44px;
+  padding: 12px 8px;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+  transition: background 0.15s;
+  position: relative;
+}
+
+.toggle-key-mode-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.toggle-key-mode-btn.enter-mode {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.toggle-key-mode-btn.enter-mode:hover {
+  background: var(--vscode-button-hoverBackground);
 }
 
 .status {
