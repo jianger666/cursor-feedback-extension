@@ -28,14 +28,15 @@
 
 #### 方式 A：一键安装（推荐）
 
-点击下方链接，自动配置 MCP Server：
+复制以下链接在浏览器地址栏打开，自动配置 MCP Server：
 
-[![Add to Cursor](https://img.shields.io/badge/Add%20to-Cursor-blue?style=for-the-badge&logo=cursor)](cursor://anysphere.cursor-deeplink/mcp/install?name=cursor-feedback&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImN1cnNvci1mZWVkYmFja0BsYXRlc3QiXX0=)
-
-或复制链接在浏览器打开：
 ```
 cursor://anysphere.cursor-deeplink/mcp/install?name=cursor-feedback&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImN1cnNvci1mZWVkYmFja0BsYXRlc3QiXX0=
 ```
+
+<a href="cursor://anysphere.cursor-deeplink/mcp/install?name=cursor-feedback&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImN1cnNvci1mZWVkYmFja0BsYXRlc3QiXX0=">
+  <img src="https://img.shields.io/badge/Add%20to-Cursor-blue?style=for-the-badge" alt="Add to Cursor" />
+</a>
 
 #### 方式 B：手动配置
 
