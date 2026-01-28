@@ -2,7 +2,8 @@
   "name": "cursor-feedback",
   "displayName": "Cursor Feedback",
   "description": "Interactive feedback collection for AI agents in Cursor/VS Code - MCP Server with sidebar UI",
-  "version": "1.0.5",
+  "version": "1.0.6",
+  "icon": "icon.png",
   "author": "jianger666",
   "license": "MIT",
   "repository": {
