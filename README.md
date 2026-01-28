@@ -34,10 +34,6 @@
 cursor://anysphere.cursor-deeplink/mcp/install?name=cursor-feedback&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImN1cnNvci1mZWVkYmFja0BsYXRlc3QiXX0=
 ```
 
-<a href="cursor://anysphere.cursor-deeplink/mcp/install?name=cursor-feedback&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImN1cnNvci1mZWVkYmFja0BsYXRlc3QiXX0=">
-  <img src="https://img.shields.io/badge/Add%20to-Cursor-blue?style=for-the-badge" alt="Add to Cursor" />
-</a>
-
 #### 方式 B：手动配置
 
 在 Cursor 的 MCP 配置文件中添加（`~/.cursor/mcp.json`）：
