@@ -1,8 +1,8 @@
 {
   "name": "cursor-feedback",
   "displayName": "Cursor Feedback",
-  "description": "Interactive feedback collection for AI agents in Cursor/VS Code - MCP Server with sidebar UI",
-  "version": "1.0.6",
+  "description": "Save your Cursor monthly quota! Interactive feedback loop for AI chat - one conversation, unlimited interactions via MCP",
+  "version": "1.0.8",
   "icon": "icon.png",
   "author": "jianger666",
   "license": "MIT",
@@ -16,7 +16,20 @@
     "vscode",
     "ai",
     "feedback",
-    "model-context-protocol"
+    "model-context-protocol",
+    "claude",
+    "copilot",
+    "ai-assistant",
+    "interactive",
+    "sidebar",
+    "agent",
+    "llm",
+    "chatgpt",
+    "anthropic",
+    "save-quota",
+    "unlimited-chat",
+    "conversation",
+    "human-in-the-loop"
   ],
   "publisher": "jianger666",
   "engines": {
@@ -24,6 +37,7 @@
     "node": ">=18.0.0"
   },
   "categories": [
+    "Machine Learning",
     "Other"
   ],
   "activationEvents": [
@@ -34,6 +48,22 @@
     "cursor-feedback-mcp": "./dist/mcp-server.js"
   },
   "contributes": {
+    "configuration": {
+      "title": "Cursor Feedback",
+      "properties": {
+        "cursorFeedback.language": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "zh-CN", "en"],
+          "enumDescriptions": [
+            "Auto detect based on system language",
+            "简体中文",
+            "English"
+          ],
+          "description": "Language for the extension UI"
+        }
+      }
+    },
     "commands": [
       {
         "command": "cursorFeedback.showPanel",
@@ -73,7 +103,7 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./ && npm run copy-webview",
-    "copy-webview": "mkdir -p dist/webview && cp src/webview/* dist/webview/",
+    "copy-webview": "mkdir -p dist/webview && cp src/webview/* dist/webview/ && mkdir -p dist/i18n && cp src/i18n/*.json dist/i18n/",
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "start:mcp": "node dist/mcp-server.js",

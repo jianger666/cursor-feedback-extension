@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
+import { loadMessages, getLanguage, I18nMessages } from './i18n';
 
 let feedbackViewProvider: FeedbackViewProvider | null = null;
 let pollingInterval: NodeJS.Timeout | null = null;
@@ -30,7 +31,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('cursorFeedback.startPolling', () => {
       if (feedbackViewProvider) {
         feedbackViewProvider.startPolling();
-        vscode.window.showInformationMessage('开始监听 MCP 反馈请求');
+        vscode.window.showInformationMessage(feedbackViewProvider.getMessage('startListening'));
       }
     })
   );
@@ -40,7 +41,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('cursorFeedback.stopPolling', () => {
       if (feedbackViewProvider) {
         feedbackViewProvider.stopPolling();
-        vscode.window.showInformationMessage('已停止监听');
+        vscode.window.showInformationMessage(feedbackViewProvider.getMessage('stopListening'));
       }
     })
   );
@@ -127,6 +128,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   private _activePort: number | null = null;
   private _portScanRange = 20; // 扫描端口范围
   private _seenRequestIds: Set<string> = new Set(); // 已处理过的请求 ID
+  private _i18n: I18nMessages;
   private _debugInfo: {
     portRange: string;
     workspacePath: string;
@@ -138,7 +140,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     workspacePath: '',
     connectedPorts: [],
     activePort: null,
-    lastStatus: '初始化中...'
+    lastStatus: ''
   };
 
   constructor(
@@ -147,6 +149,15 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   ) {
     this._basePort = port;
     this._debugInfo.portRange = `${port}-${port + this._portScanRange - 1}`;
+    this._i18n = loadMessages(this._extensionUri.fsPath);
+    this._debugInfo.lastStatus = this._i18n.checkingConnection;
+  }
+
+  /**
+   * 获取翻译消息
+   */
+  public getMessage(key: keyof I18nMessages): string {
+    return this._i18n[key] || key;
   }
 
   public resolveWebviewView(
@@ -181,6 +192,9 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'selectPath':
           await this._handleSelectPath();
+          break;
+        case 'switchLanguage':
+          await this._handleSwitchLanguage();
           break;
       }
     });
@@ -409,7 +423,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       // 只对新鲜请求自动聚焦和通知
       if (isFreshRequest) {
         vscode.commands.executeCommand('cursorFeedback.feedbackView.focus');
-        vscode.window.showInformationMessage('AI 正在等待您的反馈');
+        vscode.window.showInformationMessage(this._i18n.aiWaitingFeedback);
       }
     }
   }
@@ -511,14 +525,14 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
 
       const result = JSON.parse(response);
       if (result.success) {
-        vscode.window.showInformationMessage('反馈已提交');
+        vscode.window.showInformationMessage(this._i18n.feedbackSubmitted);
         this._currentRequest = null;
         this._showWaitingState();
       } else {
-        vscode.window.showErrorMessage('提交失败：' + result.error);
+        vscode.window.showErrorMessage(this._i18n.submitFailed + ': ' + result.error);
       }
     } catch (error) {
-      vscode.window.showErrorMessage('提交失败：无法连接到 MCP Server');
+      vscode.window.showErrorMessage(this._i18n.submitFailed + ': ' + this._i18n.cannotConnectMCP);
     }
   }
 
@@ -530,7 +544,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       canSelectMany: true,
       canSelectFiles: true,
       canSelectFolders: true,
-      openLabel: '选择'
+      openLabel: this._i18n.select
     });
     
     if (result && result.length > 0) {
@@ -539,6 +553,51 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         type: 'filesSelected',
         payload: { paths }
       });
+    }
+  }
+
+  /**
+   * 处理语言切换
+   */
+  private async _handleSwitchLanguage() {
+    const config = vscode.workspace.getConfiguration('cursorFeedback');
+    const currentConfigLang = config.get<string>('language') || 'auto';
+    
+    const languages = [
+      { label: '🌐 Auto (System)', value: 'auto', description: 'Detect from system language' },
+      { label: '简体中文', value: 'zh-CN', description: '' },
+      { label: 'English', value: 'en', description: '' }
+    ];
+    
+    const selected = await vscode.window.showQuickPick(
+      languages.map(l => ({
+        label: l.label + (l.value === currentConfigLang ? ' ✓' : ''),
+        description: l.description,
+        value: l.value
+      })),
+      {
+        placeHolder: 'Select Language / 选择语言'
+      }
+    );
+    
+    if (selected && selected.value !== currentConfigLang) {
+      // 更新设置
+      await config.update('language', selected.value, vscode.ConfigurationTarget.Global);
+      
+      // 重新加载 i18n（如果是 auto，需要重新检测）
+      this._i18n = loadMessages(this._extensionUri.fsPath);
+      
+      // 重新渲染 WebView
+      if (this._view) {
+        this._view.webview.html = this._getHtmlForWebview(this._view.webview);
+      }
+      
+      const effectiveLang = getLanguage();
+      vscode.window.showInformationMessage(
+        effectiveLang === 'en' 
+          ? 'Language changed to English' 
+          : '语言已切换为简体中文'
+      );
     }
   }
 
@@ -612,12 +671,21 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     // CSP 策略
     const csp = `default-src 'none'; style-src ${webview.cspSource}; script-src 'unsafe-inline' ${webview.cspSource}; img-src data:;`;
 
+    // 获取语言设置
+    const language = getLanguage();
+    const langCode = language === 'zh-TW' ? 'zh-TW' : (language === 'en' ? 'en' : 'zh-CN');
+
     // 替换占位符
     htmlTemplate = htmlTemplate
       .replace(/\{\{CSP\}\}/g, csp)
+      .replace(/\{\{LANG\}\}/g, langCode)
       .replace(/\{\{MARKED_JS_URI\}\}/g, markedJsUri.toString())
       .replace(/\{\{STYLES_CSS_URI\}\}/g, stylesCssUri.toString())
-      .replace(/\{\{SCRIPT_JS_URI\}\}/g, scriptJsUri.toString());
+      .replace(/\{\{SCRIPT_JS_URI\}\}/g, scriptJsUri.toString())
+      .replace(/\{\{I18N_JSON\}\}/g, JSON.stringify(this._i18n))
+      .replace(/\{\{i18n\.(\w+)\}\}/g, (_, key) => {
+        return (this._i18n as any)[key] || key;
+      });
 
     return htmlTemplate;
   }

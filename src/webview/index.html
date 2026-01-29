@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="{{LANG}}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -13,7 +13,8 @@
     <!-- 服务器状态 -->
     <div id="serverStatus" class="server-status">
       <span class="dot"></span>
-      <span id="serverStatusText">检查连接...</span>
+      <span id="serverStatusText">{{i18n.checkingConnection}}</span>
+      <button id="langSwitchBtn" class="lang-switch-btn" title="Switch Language / 切换语言">🌐</button>
       <span id="debugIcon" class="debug-icon">🔍</span>
       <div id="debugTooltip" class="debug-tooltip"></div>
     </div>
@@ -21,29 +22,29 @@
     <!-- 等待状态 -->
     <div id="waitingStatus" class="status waiting">
       <div class="status-icon">⏳</div>
-      <p>等待 AI 请求反馈...</p>
-      <p style="font-size: 11px; margin-top: 10px; opacity: 0.8;">当 AI 需要您的反馈时，这里会显示输入界面</p>
+      <p>{{i18n.waitingForAI}}</p>
+      <p style="font-size: 11px; margin-top: 10px; opacity: 0.8;">{{i18n.waitingHint}}</p>
     </div>
     
     <!-- 反馈表单 -->
     <div id="feedbackForm" class="hidden">
       <!-- AI 摘要 -->
       <div class="section">
-        <div class="section-title">📋 AI 工作摘要</div>
+        <div class="section-title">📋 {{i18n.aiSummary}}</div>
         <div id="summaryContent" class="summary-content"></div>
         <div id="projectInfo" class="project-info"></div>
       </div>
       
       <!-- 反馈输入 -->
       <div class="section">
-        <div class="section-title">💬 您的反馈</div>
-        <textarea id="feedbackInput" class="feedback-input" placeholder="请输入您的反馈..."></textarea>
+        <div class="section-title">💬 {{i18n.yourFeedback}}</div>
+        <textarea id="feedbackInput" class="feedback-input" placeholder="{{i18n.feedbackPlaceholder}}"></textarea>
         
         <!-- 附件区域 -->
         <div class="attachments-area">
           <div class="attachment-buttons">
-            <button id="uploadBtn" class="attachment-btn" data-tooltip="上传图片">🖼️</button>
-            <button id="selectPathBtn" class="attachment-btn" data-tooltip="选择文件/文件夹">📁</button>
+            <button id="uploadBtn" class="attachment-btn" data-tooltip="{{i18n.uploadImage}}">🖼️</button>
+            <button id="selectPathBtn" class="attachment-btn" data-tooltip="{{i18n.selectFilesOrFolders}}">📁</button>
           </div>
           <input type="file" id="imageInput" accept="image/*" multiple class="hidden">
           <div id="imagePreview" class="image-preview"></div>
@@ -55,12 +56,14 @@
       
       <!-- 提交按钮组 -->
       <div class="submit-group">
-        <button id="submitBtn" class="submit-btn">提交反馈 (Ctrl+Enter)</button>
-        <button id="toggleKeyModeBtn" class="toggle-key-mode-btn" title="切换快捷键模式">⌨️</button>
+        <button id="submitBtn" class="submit-btn">{{i18n.ctrlEnterSubmitMode}}</button>
+        <button id="toggleKeyModeBtn" class="toggle-key-mode-btn" title="{{i18n.toggleKeyMode}}">⌨️</button>
       </div>
     </div>
   </div>
   
+  <!-- 注入 i18n 数据 -->
+  <script>window.i18n = {{I18N_JSON}};</script>
   <script src="{{SCRIPT_JS_URI}}"></script>
 </body>
 </html>

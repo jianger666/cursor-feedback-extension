@@ -1,42 +1,58 @@
 # Cursor Feedback
 
-一个用于 Cursor 的交互式反馈收集工具，类似于 [mcp-feedback-enhanced](https://github.com/Minidoracat/mcp-feedback-enhanced)，但使用 TypeScript 重写，并以侧边栏形式嵌入 IDE。
+[中文文档](./README_CN.md)
 
-## ✨ 特性
+[![Version](https://img.shields.io/visual-studio-marketplace/v/jianger666.cursor-feedback)](https://marketplace.visualstudio.com/items?itemName=jianger666.cursor-feedback)
+[![Downloads](https://img.shields.io/visual-studio-marketplace/d/jianger666.cursor-feedback)](https://marketplace.visualstudio.com/items?itemName=jianger666.cursor-feedback)
+[![npm](https://img.shields.io/npm/v/cursor-feedback)](https://www.npmjs.com/package/cursor-feedback)
 
-- 🎯 **侧边栏集成** - 直接在 IDE 侧边栏中显示反馈界面，无需打开外部浏览器
-- 💬 **交互式反馈** - AI Agent 可以通过 MCP 工具请求用户反馈
-- 🖼️ **图片支持** - 支持上传图片或直接粘贴（Ctrl+V / Cmd+V）
-- 📁 **文件支持** - 支持选择文件/文件夹，将路径告诉 AI 让其读取
-- 📝 **Markdown 渲染** - AI 摘要支持完整的 Markdown 格式
-- ⏱️ **超时自动重试** - 默认 5 分钟超时，超时后 AI 会自动重新请求反馈
-- 🌍 **多语言支持** - 支持简体中文、繁体中文和英文
-- 🔒 **项目隔离** - 多窗口同时使用时，各项目互不干扰
+**Save your Cursor monthly quota!** An interactive feedback tool for Cursor that enables unlimited interactions within a single conversation through MCP (Model Context Protocol).
 
-## 🚀 快速开始
+![Demo](./demo.gif)
 
-### 1. 安装 Cursor 插件
+## 💡 Why Cursor Feedback?
 
-在 Cursor 扩展商店搜索 **"Cursor Feedback"** 安装。
+If you're on Cursor's 500 requests/month plan, every conversation counts. With Cursor Feedback:
 
-> **如果搜索不到？** 可以通过命令行安装：
+- **One conversation, unlimited interactions** - Keep chatting without consuming extra quota
+- **Human-in-the-loop workflow** - AI waits for your feedback before proceeding
+- **Sidebar integration** - No external browser needed, everything stays in your IDE
+
+## ✨ Features
+
+- 🎯 **Sidebar Integration** - Feedback UI embedded directly in the IDE sidebar
+- 💬 **Interactive Feedback** - AI Agent requests feedback via MCP tool
+- 🖼️ **Image Support** - Upload images or paste directly (Ctrl+V / Cmd+V)
+- 📁 **File Support** - Select files/folders to share paths with AI
+- 📝 **Markdown Rendering** - Full Markdown support for AI summaries
+- ⏱️ **Auto-retry on Timeout** - 5-minute default timeout, AI automatically re-requests
+- 🌍 **Multi-language** - Supports English, Simplified Chinese, Traditional Chinese
+- 🔒 **Project Isolation** - Multiple windows work independently
+
+## 🚀 Quick Start
+
+### 1. Install the Cursor Extension
+
+Search for **"Cursor Feedback"** in the Cursor extension marketplace.
+
+> **Can't find it?** Install via command line:
 > ```bash
 > cursor --install-extension jianger666.cursor-feedback
 > ```
 
-### 2. 配置 MCP Server
+### 2. Configure MCP Server
 
-#### 方式 A：一键安装（推荐）
+#### Option A: One-click Install (Recommended)
 
-点击下方按钮，自动配置 MCP Server：
+Click the button below to automatically configure the MCP Server:
 
 <a href="https://cursor.com/en/install-mcp?name=cursor-feedback&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsImN1cnNvci1mZWVkYmFja0BsYXRlc3QiXX0%3D">
   <img src="mcp-install-dark.png" alt="Install MCP Server" width="126" height="28" />
 </a>
 
-#### 方式 B：手动配置
+#### Option B: Manual Configuration
 
-在 Cursor 的 MCP 配置文件中添加（`~/.cursor/mcp.json`）：
+Add to your Cursor MCP config file (`~/.cursor/mcp.json`):
 
 ```json
 {
@@ -49,13 +65,13 @@
 }
 ```
 
-#### 方式 C：全局安装
+#### Option C: Global Installation
 
 ```bash
 npm install -g cursor-feedback
 ```
 
-然后配置：
+Then configure:
 
 ```json
 {
@@ -67,71 +83,76 @@ npm install -g cursor-feedback
 }
 ```
 
-### 3. 使用
+### 3. Usage
 
-1. 重启 Cursor
-2. 侧边栏会出现 **Cursor Feedback** 图标
-3. 在聊天中让 AI 调用 `interactive_feedback` 工具
-4. AI 会在侧边栏显示工作摘要，等待您的反馈
+1. Restart Cursor
+2. The **Cursor Feedback** icon appears in the sidebar
+3. Ask AI to call the `interactive_feedback` tool in chat
+4. AI displays work summary in sidebar, waiting for your feedback
 
-### 4. 配置 User Rules（推荐）
+### 4. Configure User Rules (Recommended)
 
-为了让 AI 更好地使用 Cursor Feedback，建议在 Cursor 设置中添加以下 User Rules：
+Add these User Rules in Cursor settings for best experience:
 
 ```
-# Cursor Feedback 规则
+# Cursor Feedback Rules
 
-1. 在任何流程、任务、对话进行时，无论是询问、回复、或完成阶段性任务，皆必须调用 MCP cursor-feedback。
-2. 每当收到用户反馈，必须再次调用 MCP cursor-feedback，并根据反馈内容调整行为。
-3. 完成任务前，必须使用 MCP cursor-feedback 工具向用户询问反馈。
-4. 所有需要展示给用户的内容必须全部通过 cursor-feedback 的 summary 参数传递。
+1. Always call MCP cursor-feedback during any workflow, task, or conversation.
+2. After receiving user feedback, call MCP cursor-feedback again and adjust behavior accordingly.
+3. Before completing a task, use MCP cursor-feedback to ask for user feedback.
+4. All content to show users must be passed through cursor-feedback's summary parameter.
 ```
 
-配置后，AI 会在对话过程中自动调用 Cursor Feedback 工具，所有回复内容都会通过侧边栏展示，实现持续的交互式对话。
+This enables continuous interactive dialogue where AI automatically uses Cursor Feedback throughout the conversation.
 
-## 📖 MCP 工具
+## 📖 MCP Tool
 
 ### interactive_feedback
 
-交互式反馈收集工具。
+Interactive feedback collection tool.
 
-**参数:**
+**Parameters:**
 
-| 参数 | 类型 | 默认值 | 描述 |
-|------|------|--------|------|
-| `project_directory` | string | `.` | 项目目录的绝对路径（用于多窗口项目隔离） |
-| `summary` | string | `I have completed the task you requested.` | AI 工作摘要（支持 Markdown） |
-| `timeout` | number | `300` | 超时时间（秒），默认 5 分钟 |
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `project_directory` | string | `.` | Absolute path of project directory (for multi-window isolation) |
+| `summary` | string | `I have completed the task you requested.` | AI work summary (supports Markdown) |
+| `timeout` | number | `300` | Timeout in seconds (default 5 minutes) |
 
-**超时机制:**
+**Timeout Mechanism:**
 
-- 默认等待用户反馈 5 分钟（300 秒）
-- 超时后 AI 会收到超时通知
-- AI 会根据工具指令自动重新调用此工具，继续等待用户反馈
-- 这样即使您暂时离开，回来后 AI 仍会等待您的反馈
+- Default wait time: 5 minutes (300 seconds)
+- On timeout, AI receives notification
+- AI automatically re-calls the tool based on instructions
+- Even if you step away, AI will still be waiting when you return
 
-**返回:**
+**Returns:**
 
-用户反馈内容，包括文字、图片和附加文件路径。
+User feedback content including text, images, and attached file paths.
 
-## ⚙️ 配置选项
+## ⚙️ Configuration
 
-### Cursor 插件设置
+### Language Settings
 
-在设置中搜索 "Cursor Feedback"：
+**Method 1: Click the 🌐 button in the sidebar** (Recommended)
 
-| 设置 | 类型 | 默认值 | 描述 |
-|------|------|--------|------|
-| `cursorFeedback.language` | string | `zh-CN` | 界面语言 |
+Click the globe icon in the Cursor Feedback sidebar to switch languages.
 
-可选语言：
-- `zh-CN` - 简体中文
-- `zh-TW` - 繁體中文  
+**Method 2: Through VS Code Settings**
+
+Search "Cursor Feedback" in settings:
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `cursorFeedback.language` | string | `zh-CN` | UI language |
+
+Available languages:
+- `zh-CN` - Simplified Chinese (简体中文)
 - `en` - English
 
-### MCP Server 配置示例
+### MCP Server Configuration
 
-基本配置：
+Basic config:
 
 ```json
 {
@@ -144,7 +165,7 @@ npm install -g cursor-feedback
 }
 ```
 
-配置超时时间（可选，默认 5 分钟）：
+Custom timeout (optional, default 5 minutes):
 
 ```json
 {
@@ -160,14 +181,12 @@ npm install -g cursor-feedback
 }
 ```
 
-| 环境变量 | 默认值 | 描述 |
-|---------|--------|------|
-| `MCP_FEEDBACK_TIMEOUT` | `300` | 超时时间（秒），默认 5 分钟 |
-| `MCP_AUTO_RETRY` | `true` | 超时后是否提示 AI 自动重试。设为 `false` 可禁用自动重试指示 |
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `MCP_FEEDBACK_TIMEOUT` | `300` | Timeout in seconds (default 5 minutes) |
+| `MCP_AUTO_RETRY` | `true` | Whether AI should auto-retry on timeout. Set to `false` to disable |
 
-> **超时机制**：如果用户在超时时间内没有响应，AI 会收到超时通知。默认情况下，返回消息会包含重试指示，AI 会自动重新调用 feedback 工具继续等待。如果您不希望 AI 自动重试，可以设置 `MCP_AUTO_RETRY=false`。
-
-## 🏗️ 架构
+## 🏗️ Architecture
 
 ```
 ┌─────────────────┐     stdio      ┌──────────────────┐
@@ -177,69 +196,69 @@ npm install -g cursor-feedback
                                            │ HTTP API
                                            ▼
                                   ┌──────────────────┐
-                                  │  Cursor 插件      │
+                                  │  Cursor Extension│
                                   │  (extension.js)  │
                                   └────────┬─────────┘
                                            │ WebView
                                            ▼
                                   ┌──────────────────┐
-                                  │   用户界面        │
-                                  │   (侧边栏)       │
+                                  │   User Interface │
+                                  │   (Sidebar)      │
                                   └──────────────────┘
 ```
 
-**工作流程:**
+**Workflow:**
 
-1. AI Agent 通过 stdio 调用 MCP Server 的 `interactive_feedback` 工具
-2. MCP Server 创建反馈请求，通过 HTTP API 暴露给 Cursor 插件
-3. Cursor 插件通过轮询获取请求，在侧边栏 WebView 中显示
-4. 用户输入反馈（文字/图片/文件），提交后通过 HTTP 返回给 MCP Server
-5. MCP Server 将反馈结果返回给 AI Agent
+1. AI Agent calls MCP Server's `interactive_feedback` tool via stdio
+2. MCP Server creates feedback request, exposes via HTTP API
+3. Cursor extension polls for requests, displays in sidebar WebView
+4. User inputs feedback (text/images/files), submits via HTTP
+5. MCP Server returns feedback result to AI Agent
 
-## 📊 与 mcp-feedback-enhanced 对比
+## 📊 Comparison with mcp-feedback-enhanced
 
-| 功能 | mcp-feedback-enhanced | cursor-feedback |
-|------|:--------------------:|:---------------:|
-| MCP 工具 | ✅ | ✅ |
-| 文字反馈 | ✅ | ✅ |
-| 图片上传 | ✅ | ✅ |
-| 图片粘贴 | ✅ | ✅ |
-| 文件/文件夹选择 | ❌ | ✅ |
-| Markdown 渲染 | ✅ | ✅ |
-| 多语言支持 | ✅ | ✅ |
-| 超时自动重试 | ✅ | ✅ |
-| **IDE 侧边栏集成** | ❌ | ✅ |
-| **多窗口项目隔离** | ❌ | ✅ |
-| 命令执行 | ✅ | ⏳ |
+| Feature | mcp-feedback-enhanced | cursor-feedback |
+|---------|:--------------------:|:---------------:|
+| MCP Tool | ✅ | ✅ |
+| Text Feedback | ✅ | ✅ |
+| Image Upload | ✅ | ✅ |
+| Image Paste | ✅ | ✅ |
+| File/Folder Selection | ❌ | ✅ |
+| Markdown Rendering | ✅ | ✅ |
+| Multi-language | ✅ | ✅ |
+| Auto-retry on Timeout | ✅ | ✅ |
+| **IDE Sidebar Integration** | ❌ | ✅ |
+| **Multi-window Project Isolation** | ❌ | ✅ |
+| Command Execution | ✅ | ⏳ |
 
-## 🛠️ 开发
+## 🛠️ Development
 
 ```bash
-# 克隆项目
+# Clone the project
 git clone https://github.com/jianger666/cursor-feedback-extension.git
 cd cursor-feedback-extension
 
-# 安装依赖
+# Install dependencies
 npm install
 
-# 编译
+# Compile
 npm run compile
 
-# 监听模式
+# Watch mode
 npm run watch
 
-# 运行 lint
+# Run lint
 npm run lint
 
-# 打包插件
+# Package extension
 npx vsce package
 ```
 
-## 📄 许可证
+## 📄 License
 
 MIT
 
-## 🙏 致谢
+## 🙏 Acknowledgments
 
-- [mcp-feedback-enhanced](https://github.com/Minidoracat/mcp-feedback-enhanced) - 原始 Python 实现
-- [Model Context Protocol](https://modelcontextprotocol.io/) - MCP 协议
+- [mcp-feedback-enhanced](https://github.com/Minidoracat/mcp-feedback-enhanced) - Original Python implementation
+- [Model Context Protocol](https://modelcontextprotocol.io/) - MCP Protocol

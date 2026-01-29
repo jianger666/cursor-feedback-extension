@@ -1,6 +1,7 @@
 // WebView 脚本
 (function() {
   const vscode = acquireVsCodeApi();
+  const i18n = window.i18n || {};
 
   // 恢复之前保存的文本
   const previousState = vscode.getState();
@@ -23,6 +24,7 @@
   const serverStatus = document.getElementById('serverStatus');
   const serverStatusText = document.getElementById('serverStatusText');
   const debugTooltip = document.getElementById('debugTooltip');
+  const langSwitchBtn = document.getElementById('langSwitchBtn');
   const waitingStatus = document.getElementById('waitingStatus');
   const feedbackForm = document.getElementById('feedbackForm');
   const summaryContent = document.getElementById('summaryContent');
@@ -36,6 +38,11 @@
   const fileList = document.getElementById('fileList');
   const timeoutInfo = document.getElementById('timeoutInfo');
   const toggleKeyModeBtn = document.getElementById('toggleKeyModeBtn');
+
+  // 语言切换按钮
+  langSwitchBtn.addEventListener('click', () => {
+    vscode.postMessage({ type: 'switchLanguage' });
+  });
 
   let uploadedImages = [];
   let attachedFiles = [];
@@ -51,13 +58,13 @@
   // 更新快捷键模式 UI
   function updateKeyModeUI() {
     if (enterToSubmit) {
-      submitBtn.textContent = 'Enter 提交 · Shift+Enter 换行';
+      submitBtn.textContent = i18n.enterSubmitMode || 'Enter to submit · Shift+Enter for newline';
       toggleKeyModeBtn.classList.add('enter-mode');
-      toggleKeyModeBtn.title = '点击切换为 Ctrl+Enter 提交';
+      toggleKeyModeBtn.title = i18n.switchToCtrlEnter || 'Click to switch to Ctrl+Enter submit';
     } else {
-      submitBtn.textContent = 'Ctrl+Enter 提交 · Enter 换行';
+      submitBtn.textContent = i18n.ctrlEnterSubmitMode || 'Ctrl+Enter to submit · Enter for newline';
       toggleKeyModeBtn.classList.remove('enter-mode');
-      toggleKeyModeBtn.title = '点击切换为 Enter 提交';
+      toggleKeyModeBtn.title = i18n.switchToEnter || 'Click to switch to Enter submit';
     }
   }
 
@@ -184,10 +191,11 @@
     const remaining = Math.max(0, requestTimeout - elapsed);
     const minutes = Math.floor(remaining / 60);
     const seconds = remaining % 60;
-    timeoutInfo.textContent = '剩余时间: ' + minutes + ':' + seconds.toString().padStart(2, '0');
+    const remainingLabel = i18n.remainingTime || 'Remaining time';
+    timeoutInfo.textContent = remainingLabel + ': ' + minutes + ':' + seconds.toString().padStart(2, '0');
     if (remaining <= 0) {
       clearInterval(countdownInterval);
-      timeoutInfo.textContent = '已超时';
+      timeoutInfo.textContent = i18n.timeout || 'Timeout';
     }
   }
 
@@ -276,16 +284,23 @@
       case 'serverStatus':
         if (message.payload.connected) {
           serverStatus.classList.add('connected');
-          serverStatusText.textContent = 'MCP Server 已连接';
+          serverStatusText.textContent = i18n.mcpServerConnected || 'MCP Server connected';
         } else {
           serverStatus.classList.remove('connected');
-          serverStatusText.textContent = 'MCP Server 未连接';
+          serverStatusText.textContent = i18n.mcpServerDisconnected || 'MCP Server disconnected';
         }
         break;
       
       case 'updateDebugInfo':
         const d = message.payload;
-        debugTooltip.textContent = `🔍 调试信息\n━━━━━━━━━━━━\n扫描端口: ${d.portRange}\n工作区: ${d.workspacePath}\n当前端口: ${d.activePort || '-'}\n已连接: ${d.connectedPorts.length > 0 ? d.connectedPorts.join(', ') : '无'}\n状态: ${d.lastStatus}`;
+        const debugLabel = i18n.debugInfo || 'Debug Info';
+        const scanPortLabel = i18n.scanPort || 'Scan port';
+        const workspaceLabel = i18n.workspace || 'Workspace';
+        const currentPortLabel = i18n.currentPort || 'Current port';
+        const connectedLabel = i18n.connected || 'Connected';
+        const noneLabel = i18n.none || 'None';
+        const statusLabel = i18n.status || 'Status';
+        debugTooltip.textContent = `🔍 ${debugLabel}\n━━━━━━━━━━━━\n${scanPortLabel}: ${d.portRange}\n${workspaceLabel}: ${d.workspacePath}\n${currentPortLabel}: ${d.activePort || '-'}\n${connectedLabel}: ${d.connectedPorts.length > 0 ? d.connectedPorts.join(', ') : noneLabel}\n${statusLabel}: ${d.lastStatus}`;
         break;
         
       case 'filesSelected':

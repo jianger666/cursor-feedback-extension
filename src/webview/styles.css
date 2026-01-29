@@ -224,8 +224,24 @@ body {
   background: var(--vscode-notificationsInfoIcon-foreground);
 }
 
-.debug-icon {
+.lang-switch-btn {
   margin-left: auto;
+  padding: 2px 6px;
+  background: transparent;
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 12px;
+  opacity: 0.7;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.lang-switch-btn:hover {
+  opacity: 1;
+  background: var(--vscode-button-secondaryBackground);
+}
+
+.debug-icon {
   cursor: pointer;
   opacity: 0.6;
   font-size: 12px;
