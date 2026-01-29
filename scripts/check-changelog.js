@@ -20,7 +20,9 @@ try {
   const changelog = fs.readFileSync(changelogPath, 'utf8');
 
   // 检查是否已经包含当前版本
-  const versionPattern = new RegExp(`## \\[${currentVersion.replace(/\./g, '\\.')}\\]`, 'i');
+  // 支持两种格式：## [1.1.0] 或 ## 1.1.0
+  const escapedVersion = currentVersion.replace(/\./g, '\\.');
+  const versionPattern = new RegExp(`## (\\[${escapedVersion}\\]|${escapedVersion}\\s*\\([^)]+\\))`, 'i');
   
   if (!versionPattern.test(changelog)) {
     console.error('\n❌ 警告：CHANGELOG.md 中没有找到当前版本 ' + currentVersion);
