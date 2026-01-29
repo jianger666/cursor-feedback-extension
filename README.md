@@ -2,8 +2,8 @@
 
 [中文文档](./README_CN.md)
 
-[![Version](https://img.shields.io/visual-studio-marketplace/v/jianger666.cursor-feedback)](https://marketplace.visualstudio.com/items?itemName=jianger666.cursor-feedback)
-[![Downloads](https://img.shields.io/visual-studio-marketplace/d/jianger666.cursor-feedback)](https://marketplace.visualstudio.com/items?itemName=jianger666.cursor-feedback)
+[![Open VSX Version](https://img.shields.io/open-vsx/v/jianger666/cursor-feedback)](https://open-vsx.org/extension/jianger666/cursor-feedback)
+[![Open VSX Downloads](https://img.shields.io/open-vsx/dt/jianger666/cursor-feedback)](https://open-vsx.org/extension/jianger666/cursor-feedback)
 [![npm](https://img.shields.io/npm/v/cursor-feedback)](https://www.npmjs.com/package/cursor-feedback)
 
 **One Cursor conversation, unlimited AI interactions** - Save your monthly request quota! An interactive feedback tool for Cursor that enables unlimited interactions within a single conversation through MCP (Model Context Protocol).
