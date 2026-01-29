@@ -112,8 +112,9 @@
     "lint": "eslint src --ext ts",
     "start:mcp": "node dist/mcp-server.js",
     "prepublishOnly": "npm run compile",
-    "update-changelog": "node scripts/update-changelog.js",
-    "version": "npm run update-changelog && git add CHANGELOG.md"
+    "release": "standard-version",
+    "release:minor": "standard-version --release-as minor",
+    "release:major": "standard-version --release-as major"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",
@@ -123,6 +124,7 @@
     "@typescript-eslint/parser": "^6.13.0",
     "eslint": "^8.54.0",
     "release-please": "^17.2.0",
+    "standard-version": "^9.5.0",
     "typescript": "^5.3.0"
   },
   "dependencies": {
