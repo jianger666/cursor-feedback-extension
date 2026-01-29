@@ -2,7 +2,7 @@
   "name": "cursor-feedback",
   "displayName": "Cursor Feedback",
   "description": "Save your Cursor monthly quota! Interactive feedback loop for AI chat - one conversation, unlimited interactions via MCP",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "icon": "icon.png",
   "author": "jianger666",
   "license": "MIT",
