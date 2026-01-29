@@ -6,7 +6,7 @@
 [![Downloads](https://img.shields.io/visual-studio-marketplace/d/jianger666.cursor-feedback)](https://marketplace.visualstudio.com/items?itemName=jianger666.cursor-feedback)
 [![npm](https://img.shields.io/npm/v/cursor-feedback)](https://www.npmjs.com/package/cursor-feedback)
 
-**节省你的 Cursor 月度配额！** 通过 MCP（Model Context Protocol）实现一次对话内无限交互的交互式反馈工具。
+**一次 Cursor 对话，无限 AI 交互** - 节省你的月度请求配额！通过 MCP（Model Context Protocol）实现一次对话内无限交互的交互式反馈工具。
 
 ![Demo](./demo.gif)
 

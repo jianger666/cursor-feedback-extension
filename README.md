@@ -6,7 +6,7 @@
 [![Downloads](https://img.shields.io/visual-studio-marketplace/d/jianger666.cursor-feedback)](https://marketplace.visualstudio.com/items?itemName=jianger666.cursor-feedback)
 [![npm](https://img.shields.io/npm/v/cursor-feedback)](https://www.npmjs.com/package/cursor-feedback)
 
-**Save your Cursor monthly quota!** An interactive feedback tool for Cursor that enables unlimited interactions within a single conversation through MCP (Model Context Protocol).
+**One Cursor conversation, unlimited AI interactions** - Save your monthly request quota! An interactive feedback tool for Cursor that enables unlimited interactions within a single conversation through MCP (Model Context Protocol).
 
 ![Demo](./demo.gif)
 
