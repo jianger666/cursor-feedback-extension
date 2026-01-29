@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [1.1.1](https://github.com/jianger666/cursor-feedback-extension/compare/v1.1.0...v1.1.1) (2026-01-29)
+
+
+### Bug Fixes
+
+* update check-changelog script to support standard-version format ([b605ed5](https://github.com/jianger666/cursor-feedback-extension/commit/b605ed5b937364fac7bd98892dfce78885e16877))
+
 ## 1.1.0 (2026-01-29)
 
 
