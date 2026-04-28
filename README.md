@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/jianger666-cursor-feedback-extension-badge.png)](https://mseep.ai/app/jianger666-cursor-feedback-extension)
+
 # Cursor Feedback
 
 [中文文档](./README_CN.md)
