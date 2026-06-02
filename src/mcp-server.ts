@@ -82,6 +82,13 @@ class McpFeedbackServer {
   // Server 启动时间
   private readonly startTime: number = Date.now();
 
+  // 最近一次活动时间（任意 HTTP 轮询 / MCP 调用都会刷新）
+  // 用于 watchdog 判定是否所有 Cursor 窗口都已关闭
+  private lastActivityTime: number = Date.now();
+
+  // 看门狗定时器（兜底退出，防止进程残留 / CPU 占满）
+  private watchdogTimer: NodeJS.Timeout | null = null;
+
   constructor(port: number = 8766) {
     this.port = port;
     
@@ -163,6 +170,8 @@ class McpFeedbackServer {
 
     // 处理工具调用
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      // AI 发起调用，刷新活动时间，避免被 watchdog 误判为闲置
+      this.lastActivityTime = Date.now();
       const { name, arguments: args } = request.params;
 
       try {
@@ -480,8 +489,8 @@ class McpFeedbackServer {
       this.httpServer = http.createServer((req, res) => {
         // 包裹整个请求处理逻辑，防止异常导致进程崩溃
         try {
-          // 注意：活动时间的更新已移到具体的请求处理中
-          // 只有来自匹配工作区的请求才会更新活动时间
+          // 任何来自插件的 HTTP 请求都视为 Cursor 仍存活的心跳（供 watchdog 判定）
+          this.lastActivityTime = Date.now();
 
           // 设置 CORS 头
           res.setHeader('Access-Control-Allow-Origin', '*');
@@ -612,6 +621,9 @@ class McpFeedbackServer {
       // 启动 MCP stdio 传输
       const transport = new StdioServerTransport();
       await this.server.connect(transport);
+
+      // 启动看门狗兜底退出（防止 Cursor 关闭后进程残留 / CPU 占满）
+      this.startWatchdog();
       
       debugLog('MCP Server started successfully');
       debugLog('Waiting for tool calls from AI agent...');
@@ -622,10 +634,54 @@ class McpFeedbackServer {
   }
 
   /**
+   * 看门狗：兜底退出机制
+   *
+   * 背景：经 npx / npm exec 启动时，进程链为 Cursor → npm exec → node。
+   * Cursor 关闭后，stdin 的 EOF 在该中间层下不可靠，node 易变成孤儿进程残留；
+   * 叠加 HTTP server 是常驻 active handle，进程无法自然退出。
+   *
+   * 两道防线：
+   * 1) 父进程死亡（被 init/launchd 收养，ppid 变为 1）→ 立即退出；
+   * 2) 超过 IDLE_TIMEOUT 没有任何插件轮询 / MCP 调用 → 判定所有 Cursor 窗口已关闭 → 退出。
+   *    （插件每秒轮询 HTTP，只要还有任意 Cursor 窗口存活就会持续刷新活动时间）
+   */
+  private startWatchdog(): void {
+    const IDLE_TIMEOUT = process.env.MCP_FEEDBACK_IDLE_TIMEOUT
+      ? parseInt(process.env.MCP_FEEDBACK_IDLE_TIMEOUT, 10)
+      : 30000;
+
+    this.watchdogTimer = setInterval(() => {
+      // 防线 1：父进程已死，自己成了孤儿进程
+      if (process.ppid === 1) {
+        debugLog('Parent process gone (ppid=1), exiting...');
+        this.stop();
+        process.exit(0);
+      }
+
+      // 防线 2：长时间无任何活动 = Cursor 已全部关闭
+      const idle = Date.now() - this.lastActivityTime;
+      if (idle > IDLE_TIMEOUT) {
+        debugLog(`No activity for ${idle}ms (> ${IDLE_TIMEOUT}ms), assuming Cursor closed, exiting...`);
+        this.stop();
+        process.exit(0);
+      }
+    }, 5000);
+
+    // 不让 watchdog 自身阻止进程的自然退出
+    this.watchdogTimer.unref();
+  }
+
+  /**
    * 停止服务器
    */
   stop(): void {
     debugLog('Stopping server...');
+
+    // 关闭看门狗定时器
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
 
     // 关闭 HTTP 服务器
     if (this.httpServer) {
@@ -678,16 +734,29 @@ async function main() {
     setTimeout(() => process.exit(0), 100);
   });
 
-  // 捕获未处理的异常，记录日志但不退出进程
-  process.on('uncaughtException', (error) => {
-    debugLog(`Uncaught exception (continuing): ${error}`);
-    // 不退出进程，让 MCP 连接保持
+  // stdin 出错（父进程经 npx 中间层异常断开时可能触发）同样退出，避免残留
+  process.stdin.on('error', (error) => {
+    debugLog(`stdin error, exiting: ${error}`);
+    server.stop();
+    setTimeout(() => process.exit(0), 100);
   });
 
-  // 捕获未处理的 Promise 拒绝
-  process.on('unhandledRejection', (reason, promise) => {
-    debugLog(`Unhandled rejection (continuing): ${reason}`);
-    // 不退出进程，让 MCP 连接保持
+  // 捕获未处理的异常：记录日志后退出。
+  // ⚠️ 绝不能“吞掉异常继续运行”——否则 stdin 在父进程断开后产生的反复错误会形成
+  //    busy-loop，导致 CPU 占满且进程永不退出（本次修复的核心症状之一）。
+  process.on('uncaughtException', (error) => {
+    debugLog(`Uncaught exception, exiting: ${error?.stack || error}`);
+    try {
+      server.stop();
+    } catch {
+      // ignore
+    }
+    process.exit(1);
+  });
+
+  // 捕获未处理的 Promise 拒绝（仅记录；Promise 拒绝本身不会造成 busy-loop）
+  process.on('unhandledRejection', (reason) => {
+    debugLog(`Unhandled rejection: ${reason}`);
   });
 
   await server.start();
