@@ -2,7 +2,7 @@
   "name": "cursor-feedback",
   "displayName": "Cursor Feedback",
   "description": "One Cursor conversation, unlimited AI interactions - Save your monthly request quota! Interactive feedback loop for AI chat via MCP",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "icon": "icon.png",
   "author": "jianger666",
   "license": "MIT",
@@ -65,6 +65,16 @@
             "English"
           ],
           "description": "Language for the extension UI"
+        },
+        "cursorFeedback.systemNotification": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a system notification (macOS/Windows/Linux) when AI requests feedback while the IDE window is not focused, so you won't miss requests when away / 当 AI 请求反馈且 IDE 窗口未聚焦时，弹出系统通知，避免离开时错过反馈请求"
+        },
+        "cursorFeedback.notificationSound": {
+          "type": "boolean",
+          "default": true,
+          "description": "Play a sound with the system notification / 系统通知附带提示音"
         }
       }
     },

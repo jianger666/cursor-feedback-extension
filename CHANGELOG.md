@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [1.2.0](https://github.com/jianger666/cursor-feedback-extension/compare/v1.1.1...v1.2.0) (2026-06-12)
+
+
+### Features
+
+* 新增系统级通知：AI 请求反馈且 IDE 窗口未聚焦时，弹出系统原生通知（macOS / Windows / Linux），避免离开时错过反馈请求导致超时；新增 `cursorFeedback.systemNotification` 与 `cursorFeedback.notificationSound` 配置项
+
 ### [1.1.1](https://github.com/jianger666/cursor-feedback-extension/compare/v1.1.0...v1.1.1) (2026-06-02)
 
 

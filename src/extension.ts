@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as http from 'http';
 import * as fs from 'fs';
 import * as path from 'path';
+import { execFile } from 'child_process';
 import { loadMessages, getLanguage, I18nMessages } from './i18n';
 
 let feedbackViewProvider: FeedbackViewProvider | null = null;
@@ -424,7 +425,73 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       if (isFreshRequest) {
         vscode.commands.executeCommand('cursorFeedback.feedbackView.focus');
         vscode.window.showInformationMessage(this._i18n.aiWaitingFeedback);
+        this._sendSystemNotification(request);
       }
+    }
+  }
+
+  /**
+   * 发送系统级通知（macOS / Windows / Linux）
+   * 
+   * 场景：AI 运行较久时用户可能切去做别的事，IDE 内部的提示看不到，
+   * 等回来时反馈请求已超时。系统通知可以在 IDE 失焦时及时提醒用户回来。
+   * 
+   * 仅在 IDE 窗口未聚焦时发送——窗口聚焦时 IDE 内部提示已足够，
+   * 避免每轮对话都弹系统通知造成打扰。
+   */
+  private _sendSystemNotification(request: FeedbackRequest) {
+    const config = vscode.workspace.getConfiguration('cursorFeedback');
+    if (!config.get<boolean>('systemNotification', true)) {
+      return;
+    }
+
+    if (vscode.window.state.focused) {
+      return;
+    }
+
+    const withSound = config.get<boolean>('notificationSound', true);
+    const projectName = path.basename(request.projectDir || '')
+      || vscode.workspace.workspaceFolders?.[0]?.name
+      || '';
+    const title = projectName ? `Cursor Feedback · ${projectName}` : 'Cursor Feedback';
+    const body = this._i18n.aiWaitingFeedback;
+
+    try {
+      if (process.platform === 'darwin') {
+        // AppleScript 字符串转义（execFile 不经过 shell，无注入风险）
+        const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        let script = `display notification "${esc(body)}" with title "${esc(title)}"`;
+        if (withSound) {
+          script += ' sound name "Glass"';
+        }
+        execFile('osascript', ['-e', script], () => {});
+      } else if (process.platform === 'win32') {
+        // PowerShell 单引号字符串转义
+        const esc = (s: string) => s.replace(/'/g, "''");
+        // 使用 PowerShell 已注册的 AppId，未注册的 AppId 在 Win10/11 上会静默失败
+        const appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe';
+        const psScript = [
+          '$null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime];',
+          '$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02);',
+          "$texts = $template.GetElementsByTagName('text');",
+          `$null = $texts.Item(0).AppendChild($template.CreateTextNode('${esc(title)}'));`,
+          `$null = $texts.Item(1).AppendChild($template.CreateTextNode('${esc(body)}'));`,
+          ...(withSound ? [] : [
+            "$audio = $template.CreateElement('audio');",
+            "$audio.SetAttribute('silent', 'true');",
+            '$null = $template.DocumentElement.AppendChild($audio);'
+          ]),
+          '$toast = [Windows.UI.Notifications.ToastNotification]::new($template);',
+          `[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('${esc(appId)}').Show($toast);`
+        ].join(' ');
+        execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', psScript], () => {});
+      } else {
+        // Linux：依赖 notify-send（GNOME/KDE 等主流桌面均自带），缺失时静默忽略
+        execFile('notify-send', ['-u', 'normal', title, body], () => {});
+      }
+    } catch (error) {
+      // 系统通知失败不影响主流程
+      console.error('Failed to send system notification:', error);
     }
   }
 

@@ -150,6 +150,17 @@ Available languages:
 - `zh-CN` - Simplified Chinese (简体中文)
 - `en` - English
 
+### System Notifications
+
+When AI requests feedback while the IDE window is **not focused** (e.g. you switched to another app), the extension sends a native system notification (macOS / Windows / Linux), so you won't miss the request and let it time out.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `cursorFeedback.systemNotification` | boolean | `true` | Show a system notification when AI requests feedback and the IDE is not focused |
+| `cursorFeedback.notificationSound` | boolean | `true` | Play a sound with the system notification |
+
+> macOS note: notifications are sent via `osascript`. If you don't see them, allow notifications for "Script Editor" in System Settings → Notifications.
+
 ### MCP Server Configuration
 
 Basic config:

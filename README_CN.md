@@ -152,6 +152,17 @@ npm install -g cursor-feedback
 - `zh-CN` - 简体中文
 - `en` - English
 
+### 系统通知
+
+当 AI 请求反馈而 IDE 窗口**未聚焦**时（比如您切去做别的事了），插件会发送系统原生通知（macOS / Windows / Linux），避免错过反馈请求导致超时。
+
+| 设置 | 类型 | 默认值 | 描述 |
+|------|------|--------|------|
+| `cursorFeedback.systemNotification` | boolean | `true` | AI 请求反馈且 IDE 未聚焦时弹出系统通知 |
+| `cursorFeedback.notificationSound` | boolean | `true` | 系统通知附带提示音 |
+
+> macOS 说明：通知通过 `osascript` 发送。如果看不到通知，请在 系统设置 → 通知 中允许"脚本编辑器"（Script Editor）发送通知。
+
 ### MCP Server 配置示例
 
 基本配置：
