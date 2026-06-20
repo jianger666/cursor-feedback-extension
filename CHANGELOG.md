@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.0.1](https://github.com/jianger666/cursor-feedback-extension/compare/v2.0.0...v2.0.1) (2026-06-20)
+
+
+### Bug Fixes
+
+* **feishu:** 卡片标题与引导语去掉 Cursor 绑定改为通用文案 ([07857fa](https://github.com/jianger666/cursor-feedback-extension/commit/07857fa07b972c2a7c621c76fadf33870ddbdb61))
+
+
+### Code Refactoring
+
+* 发版指引从 rule 改为 skill ([5854980](https://github.com/jianger666/cursor-feedback-extension/commit/58549801b93c37262cca793ceb238d84d2806f2d))
+
+
+### Chores
+
+* **ci:** 移除 VS Code Marketplace 发布渠道 ([d58fec1](https://github.com/jianger666/cursor-feedback-extension/commit/d58fec19f9285c6705cb3aebe3aae1e4fc595986))
+
+
+### Documentation
+
+* **feishu:** 删掉与开头重复的结尾段 ([bdc9c61](https://github.com/jianger666/cursor-feedback-extension/commit/bdc9c61fa86c9a268d54d2b777ecc1b11cfb849b))
+* **feishu:** 精简事件订阅步骤描述 ([770a486](https://github.com/jianger666/cursor-feedback-extension/commit/770a4869b475a2466c99357b2e8f146582d9e57d))
+* **feishu:** 补充事件订阅（长连接）配置步骤 ([47f5656](https://github.com/jianger666/cursor-feedback-extension/commit/47f5656373bec44ff6d3274c7c46b7bc6fa105b3))
+* 添加发版流程 rule 供后续 AI 参考 ([e6986a4](https://github.com/jianger666/cursor-feedback-extension/commit/e6986a49d54b279fe28e14d1733342b20b64bbf6))
+
 ## [2.0.0](https://github.com/jianger666/cursor-feedback-extension/compare/v1.1.1...v2.0.0) (2026-06-20)
 
 
