@@ -1,0 +1,26 @@
+# npm 包只用于跑 MCP server（dist/mcp-server.js），仅保留 dist。
+# 注意：存在 .npmignore 时 npm 不再读 .gitignore，所以 dist 会正常进包。
+# VS Code 打包用 .vscodeignore，与此互不影响。
+.vscode/**
+.vscode-test/**
+src/**
+resources/**
+experiments/**
+docs/**
+scripts/**
+.husky/**
+.github/**
+.gitignore
+.vscodeignore
+.eslintrc*
+*.map
+tsconfig.json
+*.ts
+.env
+*.vsix
+*.gif
+*.png
+*.jpg
+*.jpeg
+*.svg
+.versionrc.json
