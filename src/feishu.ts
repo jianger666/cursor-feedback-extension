@@ -709,7 +709,7 @@ export class FeishuBridge {
       config: { wide_screen_mode: true },
       header: {
         template: 'carmine',
-        title: { tag: 'plain_text', content: `Cursor 反馈请求 · ${projectName}` },
+        title: { tag: 'plain_text', content: `Feedback 请求 · ${projectName}` },
       },
       body: {
         elements: [
@@ -718,7 +718,7 @@ export class FeishuBridge {
           {
             tag: 'markdown',
             text_size: 'notation',
-            content: '直接「回复」本条消息把反馈发回 Cursor（多窗口时请回复对应卡片）',
+            content: '直接「回复」本条消息把反馈发回即可（多窗口时请回复对应卡片）',
           },
         ],
       },
