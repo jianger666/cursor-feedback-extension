@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [2.0.0](https://github.com/jianger666/cursor-feedback-extension/compare/v1.1.1...v2.0.0) (2026-06-20)
+
+
+### Features
+
+* 飞书通知打通、通知设置重构与多窗口配置同步 ([fcd536e](https://github.com/jianger666/cursor-feedback-extension/commit/fcd536e295ea2a97250e2eb5c77dec6897e51d60))
+
 ## [1.2.0](https://github.com/jianger666/cursor-feedback-extension/compare/v1.1.1...v1.2.0) (2026-06-12)
 
 
