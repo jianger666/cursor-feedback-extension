@@ -205,7 +205,7 @@ npm install -g cursor-feedback
 
 ### 飞书通知配置
 
-两种方式都行（详见[飞书配置教程](./docs/feishu-setup.md)）：
+两种方式都行——但都要先在飞书后台把机器人配好：开启机器人能力、申请权限、配置**事件订阅**（长连接方式 + `im.message.receive_v1` 事件）。完整步骤见[飞书配置教程](./docs/feishu-setup.md)：
 
 - **用 Cursor**：在插件面板顶部「通知设置」图标里填飞书凭证。
 - **用其他 MCP host**（没有这个插件面板的 Agent 工具）：在 `mcp.json` 的 `env` 里配置：

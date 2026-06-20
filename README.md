@@ -201,7 +201,7 @@ Custom timeout (optional, default 5 minutes):
 
 ### Feishu Notifications
 
-Either way works (see the [Feishu setup guide](./docs/feishu-setup.md)):
+Either way works — but you first need to set up the bot in the Feishu console: enable the bot, grant permissions, and turn on **event subscription** (long-connection mode + the `im.message.receive_v1` event). Full walkthrough in the [Feishu setup guide](./docs/feishu-setup.md):
 
 - **On Cursor**: fill in Feishu credentials via the "Notification settings" icon at the top of the panel.
 - **On other MCP hosts** (agent tools without this panel): configure through `env` in `mcp.json`:
