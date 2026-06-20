@@ -19,15 +19,14 @@ description: 发布 cursor-feedback 新版本到 npm / Open VSX / VS Code Market
 - **第 2 步**：`standard-version` 自动升级 `package.json` 版本、按 commit 生成 CHANGELOG、打 `vX.Y.Z` tag。
 - **第 3 步**：推送 tag 后 GitHub Actions 自动发布，去仓库 Actions 页看进度。
 
-## 三个发布渠道
+## 两个发布渠道
 
 | 渠道 | 认证 | 说明 |
 | --- | --- | --- |
 | npm | OIDC Trusted Publishing | 免 token、永不过期（已在 npmjs 配 trusted publisher）|
 | Open VSX | `OVSX_PAT` secret | Cursor / Windsurf / VSCodium 用户从这装 |
-| VS Code Marketplace | `VSCE_PAT` secret | 缺该 secret 时此步骤自动跳过 |
 
-secrets 在 GitHub 仓库 `Settings → Secrets and variables → Actions` 配置。
+`OVSX_PAT` 在 GitHub 仓库 `Settings → Secrets and variables → Actions` 配置。
 
 ## 硬约束（踩过的坑，别再犯）
 

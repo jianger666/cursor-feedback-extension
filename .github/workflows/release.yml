@@ -1,9 +1,9 @@
 name: Release
 
-# 推送 v*.*.* tag 时自动发布到三个渠道：
+# 推送 v*.*.* tag 时自动发布到两个渠道：
 #   - npm：用 OIDC Trusted Publishing，无需 token、永不过期（需先在
 #     npmjs.com 的 cursor-feedback 包设置里把本仓库配成 Trusted Publisher）
-#   - VS Code Marketplace / Open VSX：用 PAT（仓库 Secrets 配 VSCE_PAT / OVSX_PAT），没配则跳过
+#   - Open VSX：用 PAT（仓库 Secrets 配 OVSX_PAT），没配则跳过
 # 发版流程：npm run release:<patch|minor|major> && git push --follow-tags
 
 on:
@@ -20,7 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       OVSX_PAT: ${{ secrets.OVSX_PAT }}
-      VSCE_PAT: ${{ secrets.VSCE_PAT }}
     steps:
       - uses: actions/checkout@v4
 
@@ -35,16 +34,13 @@ jobs:
       - name: Compile
         run: npm run compile
 
+      # 打包 .vsix 供 Open VSX 发布使用
       - name: Package VSIX
         run: npx --yes @vscode/vsce package
 
       - name: Publish to Open VSX
         if: env.OVSX_PAT != ''
         run: npx --yes ovsx publish *.vsix -p "$OVSX_PAT"
-
-      - name: Publish to VS Code Marketplace
-        if: env.VSCE_PAT != ''
-        run: npx --yes @vscode/vsce publish -i *.vsix -p "$VSCE_PAT"
 
       # npm Trusted Publishing 需要较新的 npm CLI（OIDC 支持）
       - name: Upgrade npm
