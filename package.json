@@ -43,6 +43,9 @@
   "activationEvents": [
     "onStartupFinished"
   ],
+  "files": [
+    "dist"
+  ],
   "main": "./dist/extension.js",
   "bin": {
     "cursor-feedback-mcp": "./dist/mcp-server.js"
