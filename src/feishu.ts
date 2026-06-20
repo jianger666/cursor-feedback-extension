@@ -654,6 +654,30 @@ export class FeishuBridge {
   }
 
   /**
+   * 回复（引用）某条消息：用飞书 reply 接口让回执挂在原消息下，用户一眼看出是哪条。
+   * messageId 缺失或调用失败时回退普通发送，保证提示一定送达。
+   */
+  async replyToMessage(
+    messageId: string | undefined,
+    chatId: string,
+    text: string,
+  ): Promise<void> {
+    if (!this.client || !chatId) return;
+    if (messageId) {
+      try {
+        await this.client.im.v1.message.reply({
+          path: { message_id: messageId },
+          data: { content: JSON.stringify({ text }), msg_type: 'text' },
+        });
+        return;
+      } catch (e) {
+        flog('飞书回复消息失败，回退普通发送: ' + e);
+      }
+    }
+    await this.replyText(chatId, text);
+  }
+
+  /**
    * 给某条消息加 Get 表情作为「轻回执」：不产生新消息、不产生未读。
    * 失败（如该消息类型不支持表情）时回退文字回执，保证用户知道已收到。
    */

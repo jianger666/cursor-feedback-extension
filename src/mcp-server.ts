@@ -106,8 +106,11 @@ class McpFeedbackServer {
         messageId: string;
       }
     | null = null;
-  /** 抢跑暂存有效期：超过则视为与当前任务无关，丢弃 */
-  private static readonly STASH_TTL_MS = 8000;
+  /** 抢跑暂存有效期：覆盖「AI 刚结束、正要调下一轮 feedback」的竞态间隙（通常 1-3s）。
+   *  取 5s——太长会把已脱离语境的旧消息硬塞进很久后才出现的新一轮，造成上下文错乱（像答非所问）。 */
+  private static readonly STASH_TTL_MS = 5000;
+  /** 暂存过期提示定时器：到点仍未被认领则「回复」那条消息告知没送到，避免静默丢弃 */
+  private stashExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * 「我的窗口」判定为已关闭的空闲阈值：本实例曾被自己窗口插件轮询，但超过此时长没再收到
    *（只剩别的窗口在扫端口）→ 视为我的窗口已关、本实例是僵尸：不再上报 pending，避免污染全局计数。
@@ -463,9 +466,11 @@ class McpFeedbackServer {
       if (globalCount === 0) {
         // 抢跑兜底：此刻全局无人等待，但很可能 AI 正要发起下一轮（卡片还没注册）。
         // 暂存到收到消息的本实例，等下一轮 pending 注册时立即兑现。
+        // 关键：此刻没有任何 AI 在等待，绝不能给「✅ 已收到」回执——那是虚假承诺，会让用户
+        // 误以为消息已被接收（实则 AI 这轮可能已结束、永远不会来认领，消息石沉大海）。
+        // 回执只在「真正送达某个等待中的请求」时给（见 tryConsumeStash → submitFromFeishu）。
         this.stashedInbound = { text, chatId, images, files, at: Date.now(), messageId };
-        // 轻回执：先给消息加 ✅ 表情（无未读）；兑现到具体任务时不再重复回执
-        this.feishu.reactDone(messageId || undefined, chatId);
+        this.armStashExpiryNotice();
       } else if (globalCount === 1) {
         if (localPending.length === 1) {
           // 唯一的等待就在本窗口 → 直接给
@@ -664,6 +669,30 @@ class McpFeedbackServer {
   }
 
   /**
+   * 暂存「无主消息」后，启动过期提示定时器：到 STASH_TTL_MS 仍没被 AI 认领，就「回复」
+   * 那条消息明确告知没送到、引导重发（不再静默丢弃，也不给虚假回执）。
+   * 每来一条无主消息都重置，避免连发时多个定时器并存。
+   */
+  private armStashExpiryNotice(): void {
+    if (this.stashExpiryTimer) clearTimeout(this.stashExpiryTimer);
+    this.stashExpiryTimer = setTimeout(() => {
+      this.stashExpiryTimer = null;
+      const stash = this.stashedInbound;
+      if (!stash) return; // 已被 tryConsumeStash 兑现
+      this.stashedInbound = null;
+      // 引用回复（锚定到最近这条，方便定位）。文案不带「这条/都/重复」等数量词——
+      // 单条已断、多条全丢、第一条已送达后续丢，三种场景下数量词总有一种会误导。
+      // 且引导「待 AI 回复后再重发」：AI 只有重新调起 feedback（即回复）时才会等待接收，
+      // 此刻立即重发仍会落空。
+      this.feishu.replyToMessage(
+        stash.messageId,
+        stash.chatId,
+        '⚠️ 消息未能送达 AI（它可能正忙于上一轮任务，或这轮对话已结束）。需要的话请待 AI 回复后重新发送一次。',
+      );
+    }, McpFeedbackServer.STASH_TTL_MS);
+  }
+
+  /**
    * 抢跑暂存兑现：若存在近期「无主」飞书消息，立即作为指定请求的回复提交。
    * 超过 STASH_TTL_MS 的暂存视为与当前任务无关，直接丢弃。
    */
@@ -671,12 +700,19 @@ class McpFeedbackServer {
     const stash = this.stashedInbound;
     if (!stash) return;
     this.stashedInbound = null;
+    // 已被 AI 认领，取消「没送到」提示定时器
+    if (this.stashExpiryTimer) {
+      clearTimeout(this.stashExpiryTimer);
+      this.stashExpiryTimer = null;
+    }
     if (Date.now() - stash.at > McpFeedbackServer.STASH_TTL_MS) {
       debugLog('Stashed inbound expired, dropped');
       return;
     }
     debugLog(`Consuming stashed inbound for request: ${requestId}`);
-    this.submitFromFeishu(requestId, stash.text, stash.chatId, stash.images, stash.files);
+    // 真正送达某个等待中的请求时，才给「✅ 送达回执」（传 messageId 触发 reactDone）。
+    // 暂存阶段不再预先回执，避免「没人接却假装已收到」误导用户。
+    this.submitFromFeishu(requestId, stash.text, stash.chatId, stash.images, stash.files, stash.messageId);
   }
 
   /**
