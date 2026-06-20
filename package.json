@@ -69,7 +69,12 @@
         "cursorFeedback.systemNotification": {
           "type": "boolean",
           "default": true,
-          "description": "Show a system notification (macOS/Windows/Linux) when AI requests feedback while the IDE window is not focused, so you won't miss requests when away / 当 AI 请求反馈且 IDE 窗口未聚焦时，弹出系统通知，避免离开时错过反馈请求"
+          "description": "In-app notifications: automatically show the feedback panel when AI requests feedback. When off, this window stays fully silent — no panel, no focus stealing, and nothing is pushed here (not even when you switch back). Maps to the in-app notifications toggle in the feedback panel. / 插件通知：AI 请求反馈时自动弹出反馈面板。关闭后本窗口完全静默——不弹面板、不抢焦点、消息也不推送到本窗口（之后切回也不显示）。对应反馈面板里的「插件通知」开关。"
+        },
+        "cursorFeedback.osNotification": {
+          "type": "boolean",
+          "default": true,
+          "description": "Notify when in background: fire a system (OS) notification when the IDE window is not focused — a sub-option under in-app notifications. When off, no system notification is sent even if you switch away (the panel still pops up normally). / 切到后台时提醒：IDE 窗口未聚焦时才弹系统通知，是「插件通知」的子项。关闭后即使切走也不弹系统通知（面板照常弹出）。"
         },
         "cursorFeedback.notificationSound": {
           "type": "boolean",
@@ -93,8 +98,29 @@
         "command": "cursorFeedback.stopPolling",
         "title": "Stop Listening",
         "category": "Cursor Feedback"
+      },
+      {
+        "command": "cursorFeedback.insertSelection",
+        "title": "Insert Selection to Feedback",
+        "category": "Cursor Feedback"
       }
     ],
+    "keybindings": [
+      {
+        "command": "cursorFeedback.insertSelection",
+        "key": "ctrl+shift+'",
+        "mac": "cmd+shift+'"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "cursorFeedback.insertSelection",
+          "when": "editorTextFocus",
+          "group": "9_cutcopypaste@99"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -141,6 +167,7 @@
     "typescript": "^5.3.0"
   },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.67.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "ws": "^8.14.0"
   }

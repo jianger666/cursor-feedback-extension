@@ -28,13 +28,55 @@ export type I18nMessages = {
   connected: string;
   none: string;
   status: string;
-  startListening: string;
-  stopListening: string;
   aiWaitingFeedback: string;
-  feedbackSubmitted: string;
   submitFailed: string;
   cannotConnectMCP: string;
   select: string;
+  dropToUpload: string;
+  submitting: string;
+  removeAttachment: string;
+  autoRetryOn: string;
+  autoRetryOff: string;
+  accentBrand: string;
+  accentIde: string;
+  clickToZoom: string;
+  insertSelection: string;
+  contextHint: string;
+  contextHintMention: string;
+  contextHintInsert: string;
+  insertShortcut: string;
+  mentionFiles: string;
+  noMatchFiles: string;
+  contextRefLabel: string;
+  submitHintCtrl: string;
+  submitHintEnter: string;
+  statusNoWorkspace: string;
+  statusListening: string;
+  statusFound: string;
+  statusNoServer: string;
+  statusConnected: string;
+  statusPollError: string;
+  feishuSettings: string;
+  feishuDesc: string;
+  feishuAppId: string;
+  feishuAppSecret: string;
+  feishuAppIdPlaceholder: string;
+  feishuSecretPlaceholder: string;
+  feishuGuide: string;
+  feishuClose: string;
+  feishuStatusUnconfigured: string;
+  feishuStatusConfigured: string;
+  feishuStatusBound: string;
+  feishuHint: string;
+  systemNotifyLabel: string;
+  showSecret: string;
+  hideSecret: string;
+  notifySettingsTitle: string;
+  pluginNotifyDesc: string;
+  osNotifyLabel: string;
+  osNotifyDesc: string;
+  feishuAckLabel: string;
+  feishuAckDesc: string;
 };
 
 let cachedMessages: I18nMessages | null = null;
@@ -120,12 +162,54 @@ function getDefaultMessages(): I18nMessages {
     connected: "Connected",
     none: "None",
     status: "Status",
-    startListening: "Started listening for MCP feedback requests",
-    stopListening: "Stopped listening",
     aiWaitingFeedback: "AI is waiting for your feedback",
-    feedbackSubmitted: "Feedback submitted",
     submitFailed: "Submit failed",
     cannotConnectMCP: "Cannot connect to MCP Server",
-    select: "Select"
+    select: "Select",
+    dropToUpload: "Drop images to attach",
+    submitting: "Submitting…",
+    removeAttachment: "Remove",
+    autoRetryOn: "Keep-waiting: ON · auto-continue on timeout (click to turn off)",
+    autoRetryOff: "Keep-waiting: OFF · end turn on timeout (click to turn on)",
+    accentBrand: "Accent: brand pink (click to follow IDE)",
+    accentIde: "Accent: follow IDE color (click for brand pink)",
+    clickToZoom: "Click to zoom",
+    insertSelection: "Insert selection ({shortcut})",
+    contextHint: "@ files · {shortcut} for selection",
+    contextHintMention: "@ files",
+    contextHintInsert: "for selection",
+    insertShortcut: "{shortcut}",
+    mentionFiles: "Reference files",
+    noMatchFiles: "No matching files",
+    contextRefLabel: "Reference",
+    submitHintCtrl: "{ctrlEnter}",
+    submitHintEnter: "Enter",
+    statusNoWorkspace: "(no workspace)",
+    statusListening: "Listening on port {port}",
+    statusFound: "Request found (port {port})",
+    statusNoServer: "MCP Server not found",
+    statusConnected: "Connected to {count} port(s), waiting",
+    statusPollError: "Polling error: {error}",
+    feishuSettings: "Feishu notifications",
+    feishuDesc: "Pushes feedback to Feishu, where you can reply directly. Optional.",
+    feishuAppId: "App ID",
+    feishuAppSecret: "App Secret",
+    feishuAppIdPlaceholder: "cli_xxxxxxxx",
+    feishuSecretPlaceholder: "Enter App Secret",
+    feishuGuide: "How to set up a Feishu bot?",
+    feishuClose: "Close",
+    feishuStatusUnconfigured: "Not configured",
+    feishuStatusConfigured: "Configured · send your bot a message to bind",
+    feishuStatusBound: "Configured & bound, ready to push",
+    feishuHint: "Tip: after entering credentials, message your bot in Feishu to bind.",
+    systemNotifyLabel: "In-app notifications",
+    showSecret: "Show secret",
+    hideSecret: "Hide secret",
+    notifySettingsTitle: "Notification settings",
+    pluginNotifyDesc: "Shows the feedback panel when AI requests feedback; when off, this window stays fully silent.",
+    osNotifyLabel: "Notify when in background",
+    osNotifyDesc: "Sends a system notification when the IDE is in the background.",
+    feishuAckLabel: "Get emoji acknowledgement",
+    feishuAckDesc: "After you reply in Feishu, the bot adds a Get emoji as acknowledgement."
   };
 }

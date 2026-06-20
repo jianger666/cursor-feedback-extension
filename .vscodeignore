@@ -2,10 +2,16 @@
 .vscode-test/**
 src/**
 node_modules/**
+experiments/**
+docs/**
+scripts/**
+.husky/**
+.github/**
 .gitignore
 .eslintrc*
 *.map
 tsconfig.json
 *.ts
 .env
+*.vsix
 !dist/**

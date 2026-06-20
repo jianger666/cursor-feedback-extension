@@ -6,13 +6,13 @@
 [![Open VSX Downloads](https://img.shields.io/open-vsx/dt/jianger666/cursor-feedback)](https://open-vsx.org/extension/jianger666/cursor-feedback)
 [![npm](https://img.shields.io/npm/v/cursor-feedback)](https://www.npmjs.com/package/cursor-feedback)
 
-**一次 Cursor 对话，无限 AI 交互** - 节省你的月度请求配额！通过 MCP（Model Context Protocol）实现一次对话内无限交互的交互式反馈工具。
+**一次对话，无限 AI 交互** - 如果你是按次计费的用户，它能帮你省下月度请求配额；还能把你的 Agent 工具和飞书打通——AI 请求反馈时推到飞书，你在手机上就能回。基于 MCP（Model Context Protocol）的交互式反馈工具。
 
 ![Demo](./demo.gif)
 
 ## 💡 为什么选择 Cursor Feedback？
 
-如果你使用的是 Cursor 的 500次/月 计划，每次对话都很珍贵。使用 Cursor Feedback：
+如果你使用的是 Cursor 的 500次/月 计划或其它 coding plan，每次对话都很珍贵。使用 Cursor Feedback：
 
 - **一次对话，无限交互** - 持续聊天而不消耗额外配额
 - **人机协作工作流** - AI 等待你的反馈后再继续
@@ -28,6 +28,7 @@
 - 📁 **文件支持** - 支持选择文件/文件夹，将路径告诉 AI 让其读取
 - 📝 **Markdown 渲染** - AI 摘要支持完整的 Markdown 格式
 - ⏱️ **超时自动重试** - 默认 5 分钟超时，超时后 AI 会自动重新请求反馈
+- 🔔 **飞书打通** - AI 请求反馈时把摘要推送到飞书，你直接在手机上回复，不用守在电脑前
 - 🌍 **多语言支持** - 支持简体中文、繁体中文和英文
 - 🔒 **项目隔离** - 多窗口同时使用时，各项目互不干扰
 
@@ -117,7 +118,7 @@ npm install -g cursor-feedback
 
 | 参数 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
-| `project_directory` | string | `.` | 项目目录的绝对路径（用于多窗口项目隔离） |
+| `project_directory` | string | 必填 | 当前所在项目空间的根目录绝对路径（你打开的工作区；用于多窗口隔离） |
 | `summary` | string | `I have completed the task you requested.` | AI 工作摘要（支持 Markdown） |
 | `timeout` | number | `300` | 超时时间（秒），默认 5 分钟 |
 
@@ -152,13 +153,14 @@ npm install -g cursor-feedback
 - `zh-CN` - 简体中文
 - `en` - English
 
-### 系统通知
+### 通知设置
 
-当 AI 请求反馈而 IDE 窗口**未聚焦**时（比如您切去做别的事了），插件会发送系统原生通知（macOS / Windows / Linux），避免错过反馈请求导致超时。
+在反馈面板顶部点「通知设置」图标即可配置插件通知与飞书通知，也可在 VS Code 设置里调整：
 
 | 设置 | 类型 | 默认值 | 描述 |
 |------|------|--------|------|
-| `cursorFeedback.systemNotification` | boolean | `true` | AI 请求反馈且 IDE 未聚焦时弹出系统通知 |
+| `cursorFeedback.systemNotification` | boolean | `true` | 插件通知（主开关）：AI 请求反馈时自动弹出反馈面板。关闭后本窗口完全静默——不弹面板、不抢焦点、也不推送消息到本窗口 |
+| `cursorFeedback.osNotification` | boolean | `true` | 切到后台时提醒（子项）：IDE 窗口未聚焦时才弹系统原生通知。关闭后即使切走也不弹（面板照常弹出） |
 | `cursorFeedback.notificationSound` | boolean | `true` | 系统通知附带提示音 |
 
 > macOS 说明：通知通过 `osascript` 发送。如果看不到通知，请在 系统设置 → 通知 中允许"脚本编辑器"（Script Editor）发送通知。
@@ -199,7 +201,38 @@ npm install -g cursor-feedback
 | `MCP_FEEDBACK_TIMEOUT` | `300` | 超时时间（秒），默认 5 分钟 |
 | `MCP_AUTO_RETRY` | `true` | 超时后是否提示 AI 自动重试。设为 `false` 可禁用自动重试指示 |
 
-> **超时机制**：如果用户在超时时间内没有响应，AI 会收到超时通知。默认情况下，返回消息会包含重试指示，AI 会自动重新调用 feedback 工具继续等待。如果您不希望 AI 自动重试，可以设置 `MCP_AUTO_RETRY=false`。
+> **超时续期**：超时后默认返回续期提示，AI 会自动再次调用 feedback 继续等待；不想自动续期可设 `MCP_AUTO_RETRY=false`。也可在反馈面板顶部「超时续期」开关随时切换（优先级：面板 > env > 默认开）。
+
+### 飞书通知配置
+
+两种方式都行（详见[飞书配置教程](./docs/feishu-setup.md)）：
+
+- **用 Cursor**：在插件面板顶部「通知设置」图标里填飞书凭证。
+- **用其他 MCP host**（没有这个插件面板的 Agent 工具）：在 `mcp.json` 的 `env` 里配置：
+
+```json
+{
+  "mcpServers": {
+    "cursor-feedback": {
+      "command": "npx",
+      "args": ["-y", "cursor-feedback@latest"],
+      "env": {
+        "FEISHU_APP_ID": "cli_xxxxxxxx",
+        "FEISHU_APP_SECRET": "your_app_secret"
+      }
+    }
+  }
+}
+```
+
+| 环境变量 | 默认值 | 描述 |
+|---------|--------|------|
+| `FEISHU_APP_ID` | - | 飞书应用 App ID（形如 `cli_xxxxxxxx`） |
+| `FEISHU_APP_SECRET` | - | 飞书应用 App Secret |
+| `FEISHU_ENABLED` | `true` | 是否推送反馈到飞书，设 `false` 关闭 |
+| `FEISHU_ACK` | `true` | 收到你的回复后是否回「Get」表情回执，设 `false` 关闭 |
+
+> 优先级：**插件面板（填了凭证）> 这里的 env > 默认**。面板里填了 App ID/Secret 就以面板为准；没填则回退到 env。首次仍需在飞书里给机器人发一条消息完成绑定。
 
 ## 🏗️ 架构
 

@@ -6,13 +6,13 @@
 [![Open VSX Downloads](https://img.shields.io/open-vsx/dt/jianger666/cursor-feedback)](https://open-vsx.org/extension/jianger666/cursor-feedback)
 [![npm](https://img.shields.io/npm/v/cursor-feedback)](https://www.npmjs.com/package/cursor-feedback)
 
-**One Cursor conversation, unlimited AI interactions** - Save your monthly request quota! An interactive feedback tool for Cursor that enables unlimited interactions within a single conversation through MCP (Model Context Protocol).
+**One conversation, unlimited AI interactions** - If you're on a per-request plan, it saves your monthly quota; plus it bridges your agent tool with Feishu (Lark) — when AI asks for feedback, it's pushed to Feishu and you can reply from your phone. An interactive feedback tool built on MCP (Model Context Protocol).
 
 ![Demo](./demo.gif)
 
 ## 💡 Why Cursor Feedback?
 
-If you're on Cursor's 500 requests/month plan, every conversation counts. With Cursor Feedback:
+If you're on Cursor's 500 requests/month plan or another coding plan, every conversation counts. With Cursor Feedback:
 
 - **One conversation, unlimited interactions** - Keep chatting without consuming extra quota
 - **Human-in-the-loop workflow** - AI waits for your feedback before proceeding
@@ -26,6 +26,7 @@ If you're on Cursor's 500 requests/month plan, every conversation counts. With C
 - 📁 **File Support** - Select files/folders to share paths with AI
 - 📝 **Markdown Rendering** - Full Markdown support for AI summaries
 - ⏱️ **Auto-retry on Timeout** - 5-minute default timeout, AI automatically re-requests
+- 🔔 **Feishu (Lark) Bridge** - When AI requests feedback, the summary is pushed to Feishu so you can reply right from your phone
 - 🌍 **Multi-language** - Supports English, Simplified Chinese, Traditional Chinese
 - 🔒 **Project Isolation** - Multiple windows work independently
 
@@ -115,7 +116,7 @@ Interactive feedback collection tool.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `project_directory` | string | `.` | Absolute path of project directory (for multi-window isolation) |
+| `project_directory` | string | required | Absolute path of the project workspace you are currently in (the open workspace; for multi-window isolation) |
 | `summary` | string | `I have completed the task you requested.` | AI work summary (supports Markdown) |
 | `timeout` | number | `300` | Timeout in seconds (default 5 minutes) |
 
@@ -150,13 +151,14 @@ Available languages:
 - `zh-CN` - Simplified Chinese (简体中文)
 - `en` - English
 
-### System Notifications
+### Notification Settings
 
-When AI requests feedback while the IDE window is **not focused** (e.g. you switched to another app), the extension sends a native system notification (macOS / Windows / Linux), so you won't miss the request and let it time out.
+Click the "Notification settings" icon at the top of the feedback panel to configure in-app and Feishu notifications, or adjust them in VS Code settings:
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `cursorFeedback.systemNotification` | boolean | `true` | Show a system notification when AI requests feedback and the IDE is not focused |
+| `cursorFeedback.systemNotification` | boolean | `true` | In-app notifications (main switch): automatically show the feedback panel when AI requests feedback. When off, this window stays fully silent — no panel, no focus stealing, and nothing pushed here |
+| `cursorFeedback.osNotification` | boolean | `true` | Notify when in background (sub-option): fire a native system notification only when the IDE window is not focused. When off, nothing pops even if you switch away (the panel still shows) |
 | `cursorFeedback.notificationSound` | boolean | `true` | Play a sound with the system notification |
 
 > macOS note: notifications are sent via `osascript`. If you don't see them, allow notifications for "Script Editor" in System Settings → Notifications.
@@ -195,7 +197,38 @@ Custom timeout (optional, default 5 minutes):
 | Environment Variable | Default | Description |
 |---------------------|---------|-------------|
 | `MCP_FEEDBACK_TIMEOUT` | `300` | Timeout in seconds (default 5 minutes) |
-| `MCP_AUTO_RETRY` | `true` | Whether AI should auto-retry on timeout. Set to `false` to disable |
+| `MCP_AUTO_RETRY` | `true` | Whether AI should auto-retry on timeout. Set to `false` to disable. Also toggleable via the "Keep-waiting" switch in the panel (priority: panel > env > default) |
+
+### Feishu Notifications
+
+Either way works (see the [Feishu setup guide](./docs/feishu-setup.md)):
+
+- **On Cursor**: fill in Feishu credentials via the "Notification settings" icon at the top of the panel.
+- **On other MCP hosts** (agent tools without this panel): configure through `env` in `mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "cursor-feedback": {
+      "command": "npx",
+      "args": ["-y", "cursor-feedback@latest"],
+      "env": {
+        "FEISHU_APP_ID": "cli_xxxxxxxx",
+        "FEISHU_APP_SECRET": "your_app_secret"
+      }
+    }
+  }
+}
+```
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `FEISHU_APP_ID` | - | Feishu app App ID (e.g. `cli_xxxxxxxx`) |
+| `FEISHU_APP_SECRET` | - | Feishu app App Secret |
+| `FEISHU_ENABLED` | `true` | Whether to push feedback to Feishu. Set to `false` to disable |
+| `FEISHU_ACK` | `true` | Whether to react with a "Get" emoji after you reply. Set to `false` to disable |
+
+> Priority: **panel config (when credentials are filled) > env here > default**. The panel wins when App ID/Secret are filled; otherwise it falls back to env. You still need to send the bot one message in Feishu to complete binding.
 
 ## 🏗️ Architecture
 
