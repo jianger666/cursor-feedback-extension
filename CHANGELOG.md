@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.0.2](https://github.com/jianger666/cursor-feedback-extension/compare/v2.0.1...v2.0.2) (2026-06-20)
+
+
+### Bug Fixes
+
+* **feishu:** 消息没送到时引用回复提示，去除虚假「已收到」回执 ([52b107d](https://github.com/jianger666/cursor-feedback-extension/commit/52b107d27ee146dcc10ba1a3aa77d18f3f51bb3c))
+
 ### [2.0.1](https://github.com/jianger666/cursor-feedback-extension/compare/v2.0.0...v2.0.1) (2026-06-20)
 
 
