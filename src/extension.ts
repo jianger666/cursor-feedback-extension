@@ -1016,15 +1016,18 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
    * 打开「如何配置飞书机器人」指引
    */
   private async _handleOpenFeishuGuide() {
+    const onlineUrl =
+      'https://github.com/jianger666/cursor-feedback-extension/blob/main/docs/feishu-setup.md';
     const guideUri = vscode.Uri.joinPath(this._extensionUri, 'docs', 'feishu-setup.md');
     try {
+      // 先 stat 确认打进包的本地文档在、再站内预览。
+      // markdown.showPreview 对缺失文件不报错、只渲染「找不到 feishu-setup.md」、catch 也不触发——
+      // 所以必须自己先校验存在、否则一旦打包又漏了 docs 就退回原 bug。
+      await vscode.workspace.fs.stat(guideUri);
       await vscode.commands.executeCommand('markdown.showPreview', guideUri);
     } catch {
-      try {
-        await vscode.env.openExternal(guideUri);
-      } catch {
-        // ignore
-      }
+      // 本地没有（打包漏了 / 环境异常）→ 兜底开 GitHub 在线文档、绝不让用户再撞「找不到」
+      await vscode.env.openExternal(vscode.Uri.parse(onlineUrl));
     }
   }
 
