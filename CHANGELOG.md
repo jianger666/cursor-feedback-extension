@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.0.3](https://github.com/jianger666/cursor-feedback-extension/compare/v2.0.2...v2.0.3) (2026-06-22)
+
+
+### Bug Fixes
+
+* **feishu:** 配置指引「找不到」——补打包 docs + stat 校验兜底在线 ([9eebf3c](https://github.com/jianger666/cursor-feedback-extension/commit/9eebf3cd9238f93bc0de9f1c918fd776c1885a4e))
+
 ### [2.0.2](https://github.com/jianger666/cursor-feedback-extension/compare/v2.0.1...v2.0.2) (2026-06-20)
 
 
