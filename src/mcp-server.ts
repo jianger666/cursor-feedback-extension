@@ -131,12 +131,6 @@ class McpFeedbackServer {
   // 只有来自同一工作区的轮询才会更新活动时间
   private ownerWorkspace: string | null = null;
 
-  // Cursor 在 spawn 本 MCP server 时注入的「真实所属工作区」，精确指向发起对话的那个窗口。
-  // 这是可靠的归属信号：AI 传的 project_directory 可能被填成对话里聊到的另一个项目，
-  // 用它路由会把反馈发到错误窗口、当前窗口收不到（用户反馈的 bug）。拿不到时回退到 AI 传参。
-  private readonly realWorkspace: string | null =
-    (process.env.WORKSPACE_FOLDER_PATHS || '').split(',')[0].trim() || null;
-
   // Server 启动时间
   private readonly startTime: number = Date.now();
 
@@ -285,9 +279,10 @@ class McpFeedbackServer {
       };
     }
 
-    // 归属以 Cursor 注入的真实工作区为准（修复：AI 把 project_directory 传成对话里聊到的
-    // 另一个项目时，反馈会发到错误窗口、当前窗口收不到）。拿不到 env 时才回退到 AI 传参。
-    const projectDir = this.realWorkspace || (args.project_directory as string);
+    // 归属直接用 AI 每轮传入的 project_directory（精确指向当前发起对话的窗口）。
+    // 不读 WORKSPACE_FOLDER_PATHS：那是进程级固定值，多窗口共享 / 复用同一个 MCP 进程时只反映
+    // 「首个拉起进程的窗口」，会把反馈发错窗口、当前窗口收不到（用户反馈的 bug）。
+    const projectDir = (args.project_directory as string) || '';
     // summary 支持别名 message
     const summary = (args?.summary as string) || (args?.message as string) || '我已完成您的请求。';
     // 超时时间优先级：环境变量 > 工具参数 > 默认值（300秒）
@@ -877,7 +872,7 @@ class McpFeedbackServer {
             // 别的活跃窗口对全端口的扫描虽刷 lastActivityTime，但 workspace 不匹配、不刷此字段，
             // 故已关窗口的残留 server 不会被别人续命，可被 watchdog / 僵尸自检识别。
             const ws = this.normalizePath(u.searchParams.get('workspace') || '');
-            if (ws && (ws === this.ownerWorkspace || ws === this.normalizePath(this.realWorkspace || ''))) {
+            if (ws && ws === this.ownerWorkspace) {
               this.lastOwnerPollTime = Date.now();
               this.everOwnerPolled = true;
             }
