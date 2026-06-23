@@ -234,6 +234,35 @@ npm install -g cursor-feedback
 
 > 优先级：**插件面板（填了凭证）> 这里的 env > 默认**。面板里填了 App ID/Secret 就以面板为准；没填则回退到 env。首次仍需在飞书里给机器人发一条消息完成绑定。
 
+### 在任意 MCP host 上跑飞书往复
+
+`cursor-feedback` **不绑定 Cursor**。整条飞书链路——长连接、卡片推送、回复路由——都跑在 MCP server 进程内，所以它能在**任意支持 MCP 的 Agent host** 上工作：Cursor、Claude Desktop、Cline、命令行 Agent，或你自建的 harness，都不需要侧边栏 / VS Code 面板。
+
+三步打通往复：
+
+1. **注册 MCP server**：在 host 的配置里加上，并把飞书凭证写进 `env`（与上面相同的 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`；`FEISHU_ENABLED` / `FEISHU_ACK` 可选）：
+
+```json
+{
+  "mcpServers": {
+    "cursor-feedback": {
+      "command": "npx",
+      "args": ["-y", "cursor-feedback@latest"],
+      "env": {
+        "FEISHU_APP_ID": "cli_xxxxxxxx",
+        "FEISHU_APP_SECRET": "your_app_secret"
+      }
+    }
+  }
+}
+```
+
+2. **首次绑定会话**：在飞书里给机器人发任意一条消息。server 会把这个会话记为推送目标（落盘、跨进程共享），之后就知道往哪推卡片。
+
+3. **往复**：Agent 调 `interactive_feedback` → 卡片推到飞书 → 你在飞书回复 → 回复作为工具结果路由回 Agent。手机上就能回，不用守着 IDE。
+
+> **非 Cursor 环境不会因空闲被杀。** 只有 Cursor 插件会靠轮询给 server「续命」。在其他所有 host 上，server 完全依赖 stdio 连接存活：只在 stdin EOF 或父进程死亡时退出，**绝不**因空闲退出；而且只要还有反馈在等用户，任何环境都不会退。所以你回复花了好几分钟，结果照样能回到 Agent。
+
 ## 🏗️ 架构
 
 ```

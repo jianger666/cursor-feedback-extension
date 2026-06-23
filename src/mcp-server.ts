@@ -70,6 +70,20 @@ interface FeedbackResponse {
 }
 
 /**
+ * 等待反馈的结果，必须区分三态：
+ * - feedback：拿到了用户反馈
+ * - timeout：真正等满了 timeout 窗口仍无人回复（可走「超时续期」）
+ * - superseded：被同窗口/同进程的新一轮请求主动取代（绝不能当成超时去重试）
+ *
+ * 三态拆分是为了根除「取消风暴」：多窗口 / AgentWindow 复用同一个 MCP 进程时，
+ * 旧实现把「被取代」误判成「超时」→ 返回续期提醒 → AI 立即重试 → 又取消别人，无限忙等。
+ */
+type WaitOutcome =
+  | { kind: 'feedback'; data: FeedbackResponse }
+  | { kind: 'timeout' }
+  | { kind: 'superseded' };
+
+/**
  * MCP Feedback Server
  */
 class McpFeedbackServer {
@@ -84,6 +98,8 @@ class McpFeedbackServer {
     resolve: (value: FeedbackResponse | null) => void;
     reject: (error: Error) => void;
     timeout: NodeJS.Timeout;
+    // 归属窗口（用于 cancelStalePending 按窗口精确作废，避免误杀其他窗口/agent 的等待）
+    projectDir: string;
   }> = new Map();
 
   // 当前反馈请求
@@ -296,7 +312,7 @@ class McpFeedbackServer {
     // 旧请求多半是对话被压缩 / 客户端取消后还卡在 await 的残留（要等 timeout 才自然结束），
     // 不清理会让 pendingCount 虚高、全局视角误判「多个窗口在等」
     //（即你看到的两个一模一样的 cursor-feedback-extension）。
-    this.cancelStalePending();
+    this.cancelStalePending(projectDir);
 
     // AI 调用 feedback 时设置 ownerWorkspace（这是唯一正确的时机）
     this.ownerWorkspace = this.normalizePath(projectDir);
@@ -324,9 +340,22 @@ class McpFeedbackServer {
 
     try {
       // 等待用户反馈
-      const result = await this.waitForFeedback(requestId, timeout * 1000);
+      const outcome = await this.waitForFeedback(requestId, timeout * 1000, projectDir);
 
-      if (!result) {
+      // 被同窗口/同进程的新一轮请求取代：安静结束，绝不能重试（否则多 agent 互相取消、忙等刷屏）。
+      if (outcome.kind === 'superseded') {
+        debugLog(`Request ${requestId} superseded by a newer request; ending this turn quietly`);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: '[SUPERSEDED] This feedback request was replaced by a newer interactive_feedback call (the same workspace started a new round, or another agent shares this MCP process). Do NOT call interactive_feedback again for this turn — just end your turn quietly. 【本反馈请求已被同窗口/同进程的新请求取代：不要再次调用 interactive_feedback，安静结束本轮，切勿重试。】',
+            },
+          ],
+        };
+      }
+
+      if (outcome.kind === 'timeout') {
         debugLog('Feedback wait window elapsed without user input');
         // 超时续期开关：MCP_AUTO_RETRY=false 时关闭（超时即结束），默认开启（超时返回续期提醒）。
         // 关键：这里【绝不能】说成 "cancelled"——那会让 AI 误以为用户主动取消而结束对话，
@@ -347,6 +376,8 @@ class McpFeedbackServer {
           ],
         };
       }
+
+      const result = outcome.data;
 
       debugLog(`Received feedback: ${result.interactive_feedback?.substring(0, 100)}...`);
 
@@ -626,36 +657,45 @@ class McpFeedbackServer {
   }
 
   /**
-   * 作废本实例所有未决的反馈请求（在每次新请求进来时调用）。
-   * 单个 server 实例服务单个 Cursor 窗口的单个对话，同时只应有一个活跃反馈请求；
-   * resolve(null) 让旧的 await 自然返回走超时分支，其 finally 因 id 不匹配不会误清新请求。
+   * 作废「同一窗口（projectDir）」此前残留的未决反馈请求（每次新请求进来时调用）。
+   * 关键：绝不能动其他窗口 / agent 的 pending——多窗口或 AgentWindow 会复用同一个 MCP 进程，
+   * 误清它们会让对方被当成超时而立即重试，多个 agent 互相取消，形成「取消风暴」（高频刷调用）。
+   * 被作废者 resolve(null) → waitForFeedback 映射为 superseded，旧 await 安静结束、不重试；
+   * 其 finally 因 id 不匹配也不会误清新请求。
    */
-  private cancelStalePending() {
+  private cancelStalePending(projectDir: string) {
     if (this.pendingRequests.size === 0) return;
+    const owner = this.normalizePath(projectDir);
     for (const [reqId, pending] of this.pendingRequests) {
+      if (this.normalizePath(pending.projectDir) !== owner) continue;
       clearTimeout(pending.timeout);
-      pending.resolve(null);
+      pending.resolve(null); // → superseded：旧 await 安静结束，不触发重试
       this.feishu.clearPending(reqId);
+      this.pendingRequests.delete(reqId);
     }
-    this.pendingRequests.clear();
   }
 
   /**
    * 等待用户反馈
    */
-  private waitForFeedback(requestId: string, timeoutMs: number): Promise<FeedbackResponse | null> {
-    return new Promise((resolve) => {
+  private waitForFeedback(requestId: string, timeoutMs: number, projectDir: string): Promise<WaitOutcome> {
+    return new Promise<WaitOutcome>((resolve) => {
       const timeout = setTimeout(() => {
         debugLog(`Request ${requestId} timed out`);
         this.pendingRequests.delete(requestId);
         // 飞书侧的清理统一交给 handleInteractiveFeedback 的 finally（clearPending），这里不再重复。
-        resolve(null);
+        resolve({ kind: 'timeout' });
       }, timeoutMs);
 
-      this.pendingRequests.set(requestId, { 
-        resolve, 
-        reject: () => resolve(null), 
-        timeout 
+      this.pendingRequests.set(requestId, {
+        // resolve 包一层：沿用「外部 resolve(feedback) / resolve(null)」旧约定，
+        // 但 null 一律映射为 superseded（被同进程新请求取代），绝不再走「超时重试」路径。
+        resolve: (value: FeedbackResponse | null) => {
+          resolve(value === null ? { kind: 'superseded' } : { kind: 'feedback', data: value });
+        },
+        reject: () => resolve({ kind: 'superseded' }),
+        timeout,
+        projectDir,
       });
 
       // 抢跑兑现：用户在空窗期「无主」发来的消息已被暂存，本轮 pending 一注册立即作为回复提交
@@ -1224,10 +1264,13 @@ class McpFeedbackServer {
    * Cursor 关闭后，stdin 的 EOF 在该中间层下不可靠，node 易变成孤儿进程残留；
    * 叠加 HTTP server 是常驻 active handle，进程无法自然退出。
    *
-   * 两道防线：
-   * 1) 父进程死亡（被 init/launchd 收养，ppid 变为 1）→ 立即退出；
-   * 2) 超过 IDLE_TIMEOUT 没有任何插件轮询 / MCP 调用 → 判定所有 Cursor 窗口已关闭 → 退出。
-   *    （插件每秒轮询 HTTP，只要还有任意 Cursor 窗口存活就会持续刷新活动时间）
+   * 防线（按环境自适应）：
+   * 1) 父进程死亡（被 init/launchd 收养，ppid 变为 1）→ 立即退出。**所有环境通用**。
+   * 2) 超过 IDLE_TIMEOUT 无活动 → 判定所有 Cursor 窗口已关闭 → 退出。
+   *    **仅 Cursor 插件环境（everOwnerPolled）且无 pending 等待时才退**：插件每秒轮询 HTTP 刷新活动时间、
+   *    停了就是关窗。无插件 host（Claude Desktop / CLI / 其他 MCP 客户端 / fe-ai-flow）没有轮询心跳、
+   *    idle 是常态、不靠它退出、只走防线 1 + stdin EOF（见 main 的 stdin close/end/error）。
+   * 3) 曾被本窗口插件轮询、但久未再收到（僵尸实例、只剩别的窗口扫端口续命）→ 退出。
    */
   private startWatchdog(): void {
     const IDLE_TIMEOUT = process.env.MCP_FEEDBACK_IDLE_TIMEOUT
@@ -1242,9 +1285,18 @@ class McpFeedbackServer {
         process.exit(0);
       }
 
-      // 防线 2：长时间无任何活动 = Cursor 已全部关闭
+      // 防线 2：长时间无任何活动 = Cursor 已全部关闭。
+      // 仅对「Cursor 插件环境」（everOwnerPolled：曾被自己窗口插件轮询过）生效——插件每秒轮询、
+      // 停了就是关窗。无插件 host（Claude Desktop / CLI / 其他 MCP 客户端 / fe-ai-flow 等）没有轮询心跳、
+      // idle 是常态、绝不能据此退出：否则 AI 调 interactive_feedback 等用户飞书回复的那几分钟里进程会自杀、
+      // 回复永远回不来。这类 host 完全靠 stdin close/end/error（见 main）+ 防线 1（ppid===1）退出。
+      // 另外：只要还有 pending 反馈在等用户、任何环境都不 idle 退出（正在等用户，绝不能死）。
       const idle = Date.now() - this.lastActivityTime;
-      if (idle > IDLE_TIMEOUT) {
+      if (
+        this.everOwnerPolled &&
+        this.pendingRequests.size === 0 &&
+        idle > IDLE_TIMEOUT
+      ) {
         debugLog(`No activity for ${idle}ms (> ${IDLE_TIMEOUT}ms), assuming Cursor closed, exiting...`);
         this.stop();
         process.exit(0);

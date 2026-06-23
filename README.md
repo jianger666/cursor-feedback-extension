@@ -230,6 +230,35 @@ Either way works — but you first need to set up the bot in the Feishu console:
 
 > Priority: **panel config (when credentials are filled) > env here > default**. The panel wins when App ID/Secret are filled; otherwise it falls back to env. You still need to send the bot one message in Feishu to complete binding.
 
+### Feishu round-trip on any MCP host
+
+`cursor-feedback` is **not tied to Cursor**. The whole Feishu loop — long connection, card push, and reply routing — lives inside the MCP server process, so it works on **any MCP-capable agent host**: Cursor, Claude Desktop, Cline, command-line agents, or your own harness. No sidebar / VS Code panel required.
+
+Three steps to enable the round-trip:
+
+1. **Register the MCP server** in the host's config with Feishu credentials in `env` (same `FEISHU_APP_ID` / `FEISHU_APP_SECRET` as above; `FEISHU_ENABLED` / `FEISHU_ACK` optional):
+
+```json
+{
+  "mcpServers": {
+    "cursor-feedback": {
+      "command": "npx",
+      "args": ["-y", "cursor-feedback@latest"],
+      "env": {
+        "FEISHU_APP_ID": "cli_xxxxxxxx",
+        "FEISHU_APP_SECRET": "your_app_secret"
+      }
+    }
+  }
+}
+```
+
+2. **Bind the chat once** — send the bot any message in Feishu. The server records that chat as the push target (persisted to disk, shared across processes), so it knows where to deliver cards.
+
+3. **Round-trip** — the agent calls `interactive_feedback` → a card is pushed to Feishu → you reply in Feishu → your reply is routed back to the agent as the tool result. Reply from your phone; no IDE needed.
+
+> **No idle-kill outside Cursor.** Only the Cursor extension keeps the server warm by polling. On every other host the server stays alive purely on the stdio connection: it exits on stdin EOF or parent-process death, and **never** on idle — and it always stays up while a feedback request is still waiting. So a reply that takes several minutes still makes it back.
+
 ## 🏗️ Architecture
 
 ```
