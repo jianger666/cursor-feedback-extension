@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.0.5](https://github.com/jianger666/cursor-feedback-extension/compare/v2.0.4...v2.0.5) (2026-06-23)
+
+
+### Bug Fixes
+
+* **mcp:** 根除多窗口取消风暴 + 无插件 host 不再因空闲自杀 ([5333b41](https://github.com/jianger666/cursor-feedback-extension/commit/5333b41a0903b8e16df2ad31cb033796426805fb))
+
+
+### Chores
+
+* 补齐 release:patch 脚本，与 releasing skill 文档一致 ([ed8a292](https://github.com/jianger666/cursor-feedback-extension/commit/ed8a2927eff7155d2f1ac6c627d9fb9006f6c6f3))
+
 ### [2.0.4](https://github.com/jianger666/cursor-feedback-extension/compare/v2.0.3...v2.0.4) (2026-06-22)
 
 
