@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.1.1](https://github.com/jianger666/cursor-feedback-extension/compare/v2.1.0...v2.1.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* **mcp:** 等待反馈期间不再被僵尸判定误杀——Connection closed 断连根因修复 ([39cc9d5](https://github.com/jianger666/cursor-feedback-extension/commit/39cc9d5fe5730023069014c8a749841993117efa))
+
 ## [2.1.0](https://github.com/jianger666/cursor-feedback-extension/compare/v2.0.5...v2.1.0) (2026-07-02)
 
 
