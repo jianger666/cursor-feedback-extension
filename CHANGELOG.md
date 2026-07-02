@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [2.1.0](https://github.com/jianger666/cursor-feedback-extension/compare/v2.0.5...v2.1.0) (2026-07-02)
+
+
+### Features
+
+* 快捷回复短语、暂停倒计时、反馈历史、提交轻提示与通知点击唤起 Cursor ([a508754](https://github.com/jianger666/cursor-feedback-extension/commit/a508754d78b72f2673ed2ce625b63ed0bda51a6e))
+
+
+### Bug Fixes
+
+* **mcp:** 超时空窗的提交/飞书回复不再丢失——暂存续接下一轮 + 多窗口路由修复 ([c136ff3](https://github.com/jianger666/cursor-feedback-extension/commit/c136ff371fb87b57737202ba4dc122e7e3eaa40a))
+
 ### [2.0.5](https://github.com/jianger666/cursor-feedback-extension/compare/v2.0.4...v2.0.5) (2026-06-23)
 
 
