@@ -100,6 +100,13 @@ class McpFeedbackServer {
     timeout: NodeJS.Timeout;
     // 归属窗口（用于 cancelStalePending 按窗口精确作废，避免误杀其他窗口/agent 的等待）
     projectDir: string;
+    // 超时回调（暂停恢复时需要重新 setTimeout 同一段收尾逻辑）
+    onTimeout: () => void;
+    // 倒计时暂停支持：deadline = 计时器到期的绝对时刻（运行态有效）；
+    // paused = 用户手动暂停；remainingMs = 暂停那一刻的剩余时间（暂停态有效）
+    deadline: number;
+    paused: boolean;
+    remainingMs: number;
   }> = new Map();
 
   // 当前反馈请求
@@ -120,11 +127,25 @@ class McpFeedbackServer {
         files: string[];
         at: number;
         messageId: string;
+        /** 本条暂存的有效期（无主消息 5s；回复「刚超时」卡片 15s，见 stashInbound 调用方） */
+        ttlMs: number;
+        /** 限定只能被该窗口（projectDir）的新一轮认领；无主消息不限定 */
+        forProjectDir?: string;
       }
     | null = null;
   /** 抢跑暂存有效期：覆盖「AI 刚结束、正要调下一轮 feedback」的竞态间隙（通常 1-3s）。
    *  取 5s——太长会把已脱离语境的旧消息硬塞进很久后才出现的新一轮，造成上下文错乱（像答非所问）。 */
   private static readonly STASH_TTL_MS = 5000;
+  /**
+   * 「刚超时」请求的续接窗口：超时续期开启时，AI 收到 TIMEOUT_KEEP_WAITING 后重新发起下一轮
+   * 通常要 2~10s（取决于模型和上下文大小）。这段空窗内用户的面板提交 / 对旧卡片的回复
+   * 都应暂存并续接到下一轮，而不是报「Request not found / 已结束」把用户内容丢掉。
+   */
+  private static readonly REJOIN_TTL_MS = 15000;
+  /** 最近超时结束的请求（id → 归属窗口/时刻），供面板提交与飞书旧卡片回复「续接」下一轮 */
+  private recentlyTimedOut = new Map<string, { projectDir: string; at: number }>();
+  /** 面板在超时空窗内提交的反馈：暂存到下一轮 pending 注册时立即兑现 */
+  private panelStash: { feedback: FeedbackResponse; projectDir: string; at: number } | null = null;
   /** 暂存过期提示定时器：到点仍未被认领则「回复」那条消息告知没送到，避免静默丢弃 */
   private stashExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   /**
@@ -360,10 +381,7 @@ class McpFeedbackServer {
         // 超时续期开关：MCP_AUTO_RETRY=false 时关闭（超时即结束），默认开启（超时返回续期提醒）。
         // 关键：这里【绝不能】说成 "cancelled"——那会让 AI 误以为用户主动取消而结束对话，
         // 这正是“超时后 AI 直接收尾、不再续命”的根因。改为明确区分“超时 ≠ 取消”。
-        // 优先用 UI 开关（autoRetryOverride），未设置时回退到环境变量 / 默认开启
-        const autoRetry = this.autoRetryOverride !== null
-          ? this.autoRetryOverride
-          : (process.env.MCP_AUTO_RETRY !== 'false');
+        const autoRetry = this.effectiveAutoRetry();
         const timeoutMessage = autoRetry
           ? '[TIMEOUT_KEEP_WAITING] No feedback was submitted within the wait window. This is a TIMEOUT, NOT a cancellation — the user is most likely still away from the keyboard. You MUST immediately call the interactive_feedback tool again with the same project_directory to keep waiting. Do NOT end the conversation, do NOT summarize the task as finished. Only stop calling it when the user EXPLICITLY tells you to stop. 【这是超时续期，并非用户取消：请立即用相同 project_directory 再次调用 interactive_feedback 继续等待，不要结束对话、不要当作任务完成。】'
           : '[TIMEOUT_END] No feedback was submitted within the wait window and timeout auto-continue is disabled (MCP_AUTO_RETRY=false). You may end this turn now. 【超时未收到反馈，且已关闭超时续期（MCP_AUTO_RETRY=false），可以结束本轮。】';
@@ -470,13 +488,22 @@ class McpFeedbackServer {
           // 这张卡片是本实例发出的
           if (this.pendingRequests.has(reqId)) {
             this.submitFromFeishu(reqId, text, chatId, images, files, messageId);
+          } else if (this.maybeStashForEndedCard(reqId, text, chatId, images, files, messageId)) {
+            // 卡片刚超时、AI 正要续期重调 → 暂存续接到下一轮（超时未认领由 armStashExpiryNotice 回执）
           } else {
-            // 卡片是本实例发的，但请求已结束（超时 / 已回复）→ 明确告知，不必广播
+            // 卡片是本实例发的，但请求确实已结束（已被回复 / 超时太久）→ 明确告知
             this.feishu.replyText(chatId, '这条反馈已经结束了（可能已超时或已被回复）。');
           }
         } else {
-          // 不是本实例发出的卡片 → 广播给其他窗口的 server
-          this.broadcastFeishuInbound(parentId, text, chatId, images, files, messageId);
+          // 不是本实例发出的卡片 → 广播给其他窗口的 server；无人认领必须回执，绝不静默丢弃
+          const claimed = await this.broadcastFeishuInbound(parentId, text, chatId, images, files, messageId);
+          if (!claimed) {
+            this.feishu.replyToMessage(
+              messageId || undefined,
+              chatId,
+              '⚠️ 这张卡片对应的反馈已结束或其所在窗口已关闭，消息未能送达。请回复最新的卡片，或等 AI 下次询问时再发。',
+            );
+          }
         }
         return;
       }
@@ -495,8 +522,7 @@ class McpFeedbackServer {
         // 关键：此刻没有任何 AI 在等待，绝不能给「✅ 已收到」回执——那是虚假承诺，会让用户
         // 误以为消息已被接收（实则 AI 这轮可能已结束、永远不会来认领，消息石沉大海）。
         // 回执只在「真正送达某个等待中的请求」时给（见 tryConsumeStash → submitFromFeishu）。
-        this.stashedInbound = { text, chatId, images, files, at: Date.now(), messageId };
-        this.armStashExpiryNotice();
+        this.stashInbound(text, chatId, images, files, messageId, McpFeedbackServer.STASH_TTL_MS);
       } else if (globalCount === 1) {
         if (localPending.length === 1) {
           // 唯一的等待就在本窗口 → 直接给
@@ -515,6 +541,13 @@ class McpFeedbackServer {
         );
       }
     });
+  }
+
+  /** 当前生效的超时续期开关（优先 UI 开关 autoRetryOverride，未设置时回退环境变量/默认开启） */
+  private effectiveAutoRetry(): boolean {
+    return this.autoRetryOverride !== null
+      ? this.autoRetryOverride
+      : (process.env.MCP_AUTO_RETRY !== 'false');
   }
 
   private projectName(dir: string): string {
@@ -542,7 +575,8 @@ class McpFeedbackServer {
       interactive_feedback: text,
       images,
       attachedFiles,
-      project_directory: this.currentRequest?.projectDir || '',
+      // 用 pending 自己的归属窗口：共享进程多窗口时 currentRequest 可能已是另一窗口的请求
+      project_directory: pending.projectDir || this.currentRequest?.projectDir || '',
     });
     this.pendingRequests.delete(requestId);
     this.feishu.clearPending(requestId);
@@ -558,7 +592,10 @@ class McpFeedbackServer {
     }
   }
 
-  /** 把飞书回复广播给其他窗口的 server（跨实例路由兜底） */
+  /**
+   * 把飞书回复广播给其他窗口的 server（跨实例路由兜底）。
+   * 返回是否有任一实例认领（handled）——无人认领时调用方必须回执用户，不能静默丢弃。
+   */
   private broadcastFeishuInbound(
     parentId: string,
     text: string,
@@ -566,32 +603,43 @@ class McpFeedbackServer {
     images: FeedbackResponse['images'] = [],
     attachedFiles: string[] = [],
     messageId?: string,
-  ) {
+  ): Promise<boolean> {
     const body = JSON.stringify({ parentId, text, chatId, images, attachedFiles, messageId });
+    const posts: Array<Promise<boolean>> = [];
     for (let p = this.basePort; p < this.basePort + McpFeedbackServer.PORT_SCAN_RANGE; p++) {
       if (p === this.port) continue;
-      const req = http.request(
-        {
-          hostname: '127.0.0.1',
-          port: p,
-          path: '/api/feishu/inbound',
-          method: 'POST',
-          timeout: 2000,
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(body),
+      posts.push(new Promise<boolean>((resolve) => {
+        const req = http.request(
+          {
+            hostname: '127.0.0.1',
+            port: p,
+            path: '/api/feishu/inbound',
+            method: 'POST',
+            timeout: 2000,
+            headers: {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(body),
+            },
           },
-        },
-        (res) => {
-          res.on('data', () => {});
-          res.on('end', () => {});
-        }
-      );
-      req.on('error', () => {});
-      req.on('timeout', () => req.destroy());
-      req.write(body);
-      req.end();
+          (res) => {
+            let resBody = '';
+            res.on('data', (chunk) => { resBody += chunk.toString(); });
+            res.on('end', () => {
+              try {
+                resolve(!!(JSON.parse(resBody) as { handled?: boolean }).handled);
+              } catch {
+                resolve(false);
+              }
+            });
+          }
+        );
+        req.on('error', () => resolve(false));
+        req.on('timeout', () => { req.destroy(); resolve(false); });
+        req.write(body);
+        req.end();
+      }));
     }
+    return Promise.all(posts).then((results) => results.some(Boolean));
   }
 
   /**
@@ -680,12 +728,18 @@ class McpFeedbackServer {
    */
   private waitForFeedback(requestId: string, timeoutMs: number, projectDir: string): Promise<WaitOutcome> {
     return new Promise<WaitOutcome>((resolve) => {
-      const timeout = setTimeout(() => {
+      const onTimeout = () => {
         debugLog(`Request ${requestId} timed out`);
         this.pendingRequests.delete(requestId);
+        // 记录「刚超时」：续期空窗内的面板提交 / 旧卡片回复可续接到下一轮（顺手清理过期记录）
+        this.recentlyTimedOut.set(requestId, { projectDir, at: Date.now() });
+        for (const [id, v] of this.recentlyTimedOut) {
+          if (Date.now() - v.at > McpFeedbackServer.REJOIN_TTL_MS * 4) this.recentlyTimedOut.delete(id);
+        }
         // 飞书侧的清理统一交给 handleInteractiveFeedback 的 finally（clearPending），这里不再重复。
         resolve({ kind: 'timeout' });
-      }, timeoutMs);
+      };
+      const timeout = setTimeout(onTimeout, timeoutMs);
 
       this.pendingRequests.set(requestId, {
         // resolve 包一层：沿用「外部 resolve(feedback) / resolve(null)」旧约定，
@@ -696,20 +750,125 @@ class McpFeedbackServer {
         reject: () => resolve({ kind: 'superseded' }),
         timeout,
         projectDir,
+        onTimeout,
+        deadline: Date.now() + timeoutMs,
+        paused: false,
+        remainingMs: timeoutMs,
       });
 
-      // 抢跑兑现：用户在空窗期「无主」发来的消息已被暂存，本轮 pending 一注册立即作为回复提交
+      // 抢跑兑现：空窗期的面板提交（优先，用户显式点了发送）与飞书暂存消息，
+      // 本轮 pending 一注册立即作为回复提交
+      this.tryConsumePanelStash(requestId);
       this.tryConsumeStash(requestId);
     });
   }
 
   /**
-   * 暂存「无主消息」后，启动过期提示定时器：到 STASH_TTL_MS 仍没被 AI 认领，就「回复」
+   * 暂停/恢复某个待反馈请求的超时倒计时（用户在面板点暂停按钮触发）。
+   * 暂停 = 冻结真实计时器并记下剩余时间；恢复 = 用剩余时间重新起表。
+   * 暂停期间 AI 一直挂在 interactive_feedback 调用上等待，正是期望行为（等同无限超时）。
+   */
+  private setPaused(requestId: string, paused: boolean): { ok: boolean; paused: boolean; remainingMs: number } {
+    const p = this.pendingRequests.get(requestId);
+    if (!p) return { ok: false, paused: false, remainingMs: 0 };
+    if (paused && !p.paused) {
+      clearTimeout(p.timeout);
+      p.remainingMs = Math.max(0, p.deadline - Date.now());
+      p.paused = true;
+      debugLog(`Request ${requestId} countdown paused (${p.remainingMs}ms left)`);
+    } else if (!paused && p.paused) {
+      p.paused = false;
+      p.deadline = Date.now() + p.remainingMs;
+      p.timeout = setTimeout(p.onTimeout, p.remainingMs);
+      debugLog(`Request ${requestId} countdown resumed (${p.remainingMs}ms left)`);
+    }
+    return {
+      ok: true,
+      paused: p.paused,
+      remainingMs: p.paused ? p.remainingMs : Math.max(0, p.deadline - Date.now()),
+    };
+  }
+
+  /** 当前请求的暂停态快照（随 /api/feedback/current 下发，供面板重建后恢复显示） */
+  private getPauseState(): { requestId: string; paused: boolean; remainingMs: number } | null {
+    const cur = this.currentRequest;
+    if (!cur) return null;
+    const p = this.pendingRequests.get(cur.id);
+    if (!p) return null;
+    return {
+      requestId: cur.id,
+      paused: p.paused,
+      remainingMs: p.paused ? p.remainingMs : Math.max(0, p.deadline - Date.now()),
+    };
+  }
+
+  /**
+   * 写入/合并抢跑暂存：短时间内连发多条（含图文拆条后超出合并窗口的）合并为一条，
+   * 绝不让后一条覆盖前一条（旧实现会把第一条静默丢掉）。
+   */
+  private stashInbound(
+    text: string,
+    chatId: string,
+    images: FeedbackResponse['images'],
+    files: string[],
+    messageId: string,
+    ttlMs: number,
+    forProjectDir?: string,
+  ): void {
+    const prev = this.stashedInbound;
+    if (prev && Date.now() - prev.at <= prev.ttlMs && prev.chatId === chatId) {
+      // 未过期的同会话暂存 → 合并追加，刷新时间与 TTL
+      this.stashedInbound = {
+        text: [prev.text, text].filter(Boolean).join('\n'),
+        chatId,
+        images: [...prev.images, ...images],
+        files: [...prev.files, ...files],
+        at: Date.now(),
+        messageId: messageId || prev.messageId,
+        ttlMs: Math.max(prev.ttlMs, ttlMs),
+        forProjectDir: forProjectDir ?? prev.forProjectDir,
+      };
+    } else {
+      this.stashedInbound = { text, chatId, images, files, at: Date.now(), messageId, ttlMs, forProjectDir };
+    }
+    this.armStashExpiryNotice();
+  }
+
+  /**
+   * 用户回复了一张「刚超时」的卡片：超时续期开启时 AI 马上会重新发起下一轮，
+   * 把回复暂存续接到下一轮，而不是回一句「已结束」把用户的内容丢掉。
+   * 返回 true 表示已暂存（调用方无需再回执）。
+   */
+  private maybeStashForEndedCard(
+    reqId: string,
+    text: string,
+    chatId: string,
+    images: FeedbackResponse['images'],
+    files: string[],
+    messageId: string,
+  ): boolean {
+    const rt = this.recentlyTimedOut.get(reqId);
+    if (!rt) return false; // 不是「刚超时」的请求（可能已被回复过，或结束太久）
+    if (Date.now() - rt.at > McpFeedbackServer.REJOIN_TTL_MS) return false;
+    if (!this.effectiveAutoRetry()) return false; // 续期关闭 → 不会有下一轮，别让用户空等
+    // 同窗口已有新一轮在等 → 用户该回复新卡片，不做续接（避免旧回复窜入错误轮次）
+    const owner = this.normalizePath(rt.projectDir);
+    for (const [, pending] of this.pendingRequests) {
+      if (this.normalizePath(pending.projectDir) === owner) return false;
+    }
+    debugLog(`Reply to recently timed-out card ${reqId}, stashing for next round`);
+    this.stashInbound(text, chatId, images, files, messageId, McpFeedbackServer.REJOIN_TTL_MS, rt.projectDir);
+    return true;
+  }
+
+  /**
+   * 暂存后启动过期提示定时器：到 TTL 仍没被 AI 认领，就「回复」
    * 那条消息明确告知没送到、引导重发（不再静默丢弃，也不给虚假回执）。
-   * 每来一条无主消息都重置，避免连发时多个定时器并存。
+   * 每来一条都重置，避免连发时多个定时器并存。
    */
   private armStashExpiryNotice(): void {
     if (this.stashExpiryTimer) clearTimeout(this.stashExpiryTimer);
+    const ttl = this.stashedInbound?.ttlMs ?? McpFeedbackServer.STASH_TTL_MS;
     this.stashExpiryTimer = setTimeout(() => {
       this.stashExpiryTimer = null;
       const stash = this.stashedInbound;
@@ -724,23 +883,32 @@ class McpFeedbackServer {
         stash.chatId,
         '⚠️ 消息未能送达 AI（它可能正忙于上一轮任务，或这轮对话已结束）。需要的话请待 AI 回复后重新发送一次。',
       );
-    }, McpFeedbackServer.STASH_TTL_MS);
+    }, ttl);
   }
 
   /**
-   * 抢跑暂存兑现：若存在近期「无主」飞书消息，立即作为指定请求的回复提交。
-   * 超过 STASH_TTL_MS 的暂存视为与当前任务无关，直接丢弃。
+   * 抢跑暂存兑现：若存在近期暂存的飞书消息，立即作为指定请求的回复提交。
+   * 过期的暂存视为与当前任务无关，直接丢弃；带窗口限定的暂存只给对应窗口。
    */
   private tryConsumeStash(requestId: string): void {
     const stash = this.stashedInbound;
     if (!stash) return;
+    const pending = this.pendingRequests.get(requestId);
+    if (!pending) return; // 请求已不在（不能消费暂存，留给真正等待中的下一轮）
+    // 带窗口限定的暂存（回复旧卡片的续接）只给同一窗口的新一轮，不给别的项目
+    if (
+      stash.forProjectDir &&
+      this.normalizePath(stash.forProjectDir) !== this.normalizePath(pending.projectDir)
+    ) {
+      return;
+    }
     this.stashedInbound = null;
     // 已被 AI 认领，取消「没送到」提示定时器
     if (this.stashExpiryTimer) {
       clearTimeout(this.stashExpiryTimer);
       this.stashExpiryTimer = null;
     }
-    if (Date.now() - stash.at > McpFeedbackServer.STASH_TTL_MS) {
+    if (Date.now() - stash.at > stash.ttlMs) {
       debugLog('Stashed inbound expired, dropped');
       return;
     }
@@ -748,6 +916,28 @@ class McpFeedbackServer {
     // 真正送达某个等待中的请求时，才给「✅ 送达回执」（传 messageId 触发 reactDone）。
     // 暂存阶段不再预先回执，避免「没人接却假装已收到」误导用户。
     this.submitFromFeishu(requestId, stash.text, stash.chatId, stash.images, stash.files, stash.messageId);
+  }
+
+  /**
+   * 面板暂存兑现：用户在「刚超时、AI 正要续期重调」的空窗内点了提交，
+   * 反馈已被 /api/feedback/submit 暂存，这里在下一轮注册时立即送达。
+   */
+  private tryConsumePanelStash(requestId: string): void {
+    const stash = this.panelStash;
+    if (!stash) return;
+    const pending = this.pendingRequests.get(requestId);
+    if (!pending) return;
+    if (this.normalizePath(stash.projectDir) !== this.normalizePath(pending.projectDir)) return;
+    this.panelStash = null;
+    if (Date.now() - stash.at > McpFeedbackServer.REJOIN_TTL_MS) {
+      debugLog('Panel stash expired, dropped');
+      return;
+    }
+    debugLog(`Consuming panel stash for request: ${requestId}`);
+    clearTimeout(pending.timeout);
+    pending.resolve(stash.feedback);
+    this.pendingRequests.delete(requestId);
+    this.feishu.clearPending(requestId);
   }
 
   /**
@@ -928,6 +1118,7 @@ class McpFeedbackServer {
             autoRetry: this.autoRetryOverride !== null ? this.autoRetryOverride : (process.env.MCP_AUTO_RETRY !== 'false'),
             feishu: this.feishu.getStatus(),
             feishuResolvedId: (this.lastFeishuResolved && Date.now() - this.lastFeishuResolved.at < 30000) ? this.lastFeishuResolved.id : null,
+            pause: this.getPauseState(),
           }));
           return;
         }
@@ -946,6 +1137,7 @@ class McpFeedbackServer {
               debugLog(`Received feedback submission for request: ${requestId}`);
               
               const pending = this.pendingRequests.get(requestId);
+              const recentTimeout = this.recentlyTimedOut.get(requestId);
               if (pending) {
                 clearTimeout(pending.timeout);
                 pending.resolve(feedback);
@@ -953,6 +1145,17 @@ class McpFeedbackServer {
                 // 飞书侧清理同样交给 finally（clearPending）统一处理，这里不再重复。
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: true }));
+              } else if (
+                recentTimeout &&
+                this.effectiveAutoRetry() &&
+                Date.now() - recentTimeout.at <= McpFeedbackServer.REJOIN_TTL_MS
+              ) {
+                // 提交撞上「刚超时、AI 正要续期重调」的空窗：暂存并在下一轮注册时立即送达，
+                // 不再报 "Request not found" 把用户刚敲的反馈打回去
+                debugLog(`Request ${requestId} timed out moments ago; queueing panel feedback for next round`);
+                this.panelStash = { feedback, projectDir: recentTimeout.projectDir, at: Date.now() };
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, queued: true }));
               } else {
                 debugLog(`Request ${requestId} not found`);
                 res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -993,6 +1196,34 @@ class McpFeedbackServer {
                 res.end(JSON.stringify({ error: 'Invalid config' }));
               }
             })();
+          });
+          return;
+        }
+
+        // 暂停/恢复倒计时（来自插件 UI 的暂停按钮）
+        if (req.method === 'POST' && req.url === '/api/feedback/pause') {
+          let body = '';
+          req.on('data', (chunk) => { body += chunk.toString(); });
+          req.on('end', () => {
+            try {
+              const { requestId, paused } = JSON.parse(body) as { requestId?: string; paused?: boolean };
+              if (!requestId || typeof paused !== 'boolean') {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'requestId and paused are required' }));
+                return;
+              }
+              const result = this.setPaused(requestId, paused);
+              if (result.ok) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: true, paused: result.paused, remainingMs: result.remainingMs }));
+              } else {
+                res.writeHead(404, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Request not found' }));
+              }
+            } catch {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'Invalid body' }));
+            }
           });
           return;
         }
@@ -1043,6 +1274,13 @@ class McpFeedbackServer {
               const reqId = this.feishu.resolveParent(parentId);
               if (reqId && this.pendingRequests.has(reqId)) {
                 this.submitFromFeishu(reqId, text, chatId, images || [], attachedFiles || [], messageId || '');
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ handled: true }));
+              } else if (
+                reqId &&
+                this.maybeStashForEndedCard(reqId, text, chatId, images || [], attachedFiles || [], messageId || '')
+              ) {
+                // 本实例的卡片刚超时 → 暂存续接下一轮，向广播方声明已认领（未送达时由过期提示回执）
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ handled: true }));
               } else {
