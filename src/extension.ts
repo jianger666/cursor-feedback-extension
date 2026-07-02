@@ -30,6 +30,18 @@ export function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // 注册 URI Handler：系统通知点击后通过 deep link（cursor://jianger666.cursor-feedback/focus）
+  // 打开/聚焦 IDE 并定位到反馈面板
+  context.subscriptions.push(
+    vscode.window.registerUriHandler({
+      handleUri(uri: vscode.Uri) {
+        if (uri.path === '/focus') {
+          vscode.commands.executeCommand('cursorFeedback.feedbackView.focus');
+        }
+      }
+    })
+  );
+
   // 注册命令：启动轮询
   context.subscriptions.push(
     vscode.commands.registerCommand('cursorFeedback.startPolling', () => {
@@ -146,6 +158,10 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   private _pollTimer: NodeJS.Timeout | null = null;
   private _pollDelay = 1000;
   private _currentRequest: FeedbackRequest | null = null;
+  // 当前请求所在的 server 端口：请求与端口强绑定。多项目多窗口时各 server 占不同端口，
+  // 绝不能用 _activePort || basePort 兜底提交——activePort 被瞬时网络抖动置空后，
+  // basePort 可能是别的项目的 server，提交过去就是 "Request not found"（用户反馈的 bug）。
+  private _currentRequestPort: number | null = null;
   private _lastActiveEditor: vscode.TextEditor | undefined;
   // webview 脚本是否就绪；插入上下文消息需等就绪后再发，否则 focus 唤起重建时会丢消息
   private _webviewReady = false;
@@ -260,6 +276,9 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         case 'toggleAutoRetry':
           await this._handleToggleAutoRetry();
           break;
+        case 'togglePause':
+          await this._handleTogglePause(data.payload);
+          break;
         case 'searchFiles':
           await this._handleSearchFiles();
           break;
@@ -283,6 +302,9 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'toggleFeishuAck':
           await this._handleToggleFeishuAck(!!data.payload?.enabled);
+          break;
+        case 'testNotification':
+          this._sendTestNotification();
           break;
       }
     });
@@ -418,6 +440,18 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
+      // 找回当前请求所在的端口：活跃端口被瞬时抖动重置后，当前请求的 id 已进 _seenRequestIds、
+      // 不会再出现在 myRequests 里，必须从扫描结果里按 id 找回，否则提交会 fallback 到
+      // basePort——多项目时那可能是别的项目的 server，导致 "Request not found"。
+      if (this._currentRequest && !this._activePort) {
+        const cur = this._currentRequest;
+        const holder = results.find(r => r.connected && r.request && r.request.id === cur.id);
+        if (holder) {
+          this._activePort = holder.port;
+          this._currentRequestPort = holder.port;
+        }
+      }
+
       // 没有新请求，检查是否有当前请求
       if (this._currentRequest && this._activePort) {
         this._debugInfo.activePort = this._activePort;
@@ -474,6 +508,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         feishuResolvedId = parsed.feishuResolvedId ?? null;
         this._maybeSyncFeishu(port, parsed.feishu);
         this._maybeSyncAutoRetry(parsed.autoRetry);
+        this._maybeSyncPause(parsed.pause);
       } else {
         // 旧格式（兼容 npm 上的旧版本）
         request = parsed as FeedbackRequest | null;
@@ -520,6 +555,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     if (!this._currentRequest || request.id !== this._currentRequest.id) {
       this._currentRequest = request;
       this._activePort = port;
+      this._currentRequestPort = port;
       
       // 「插件通知」主开关（配置 key 历史原因仍叫 systemNotification）：关掉后本窗口完全静默——
       // 不推送内容、不弹面板、不抢焦点、不发系统通知；连用户之后主动切回 / 打开面板也不显示
@@ -564,22 +600,59 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
-    const withSound = config.get<boolean>('notificationSound', true);
     const projectName = path.basename(request.projectDir || '')
       || vscode.workspace.workspaceFolders?.[0]?.name
       || '';
     const title = projectName ? `Cursor Feedback · ${projectName}` : 'Cursor Feedback';
-    const body = this._i18n.aiWaitingFeedback;
+    this._fireOsNotification(title, this._i18n.aiWaitingFeedback);
+  }
+
+  /**
+   * 发送测试通知（设置弹窗里的「发送测试通知」按钮）：
+   * 绕过开关与失焦判断，让用户随时一键验证系统通知链路是否通（含权限被拒排查）。
+   */
+  private _sendTestNotification() {
+    this._fireOsNotification('Cursor Feedback', this._i18n.notifyTestBody);
+  }
+
+  /** 真正发系统通知的平台分支（macOS / Windows / Linux） */
+  private _fireOsNotification(title: string, body: string) {
+    const config = vscode.workspace.getConfiguration('cursorFeedback');
+    const withSound = config.get<boolean>('notificationSound', true);
+    // 点击通知的 deep link：唤起 IDE（Cursor 为 cursor://，VSCode 为 vscode://）并聚焦反馈面板。
+    // 由 activate() 里注册的 UriHandler 处理 /focus 路径。
+    const deepLink = `${vscode.env.uriScheme}://jianger666.cursor-feedback/focus`;
 
     try {
       if (process.platform === 'darwin') {
-        // AppleScript 字符串转义（execFile 不经过 shell，无注入风险）
-        const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        let script = `display notification "${esc(body)}" with title "${esc(title)}"`;
-        if (withSound) {
-          script += ' sound name "Glass"';
-        }
-        execFile('osascript', ['-e', script], () => {});
+        // 点击通知打开 deep link 依赖 terminal-notifier（osascript 通知点击无法挂动作，系统限制）。
+        // 插件内置了一份（resources/terminal-notifier.app，x86_64，Apple Silicon 走 Rosetta），
+        // 用户零安装即可用；内置的跑不起来（如无 Rosetta）→ 试 PATH 里 brew 装的原生版 → 最后
+        // 回退 osascript（通知照弹，只是点击无动作）。
+        const tnArgs = ['-title', title, '-message', body, '-open', deepLink];
+        if (withSound) tnArgs.push('-sound', 'Glass');
+        const bundledTn = vscode.Uri.joinPath(
+          this._extensionUri,
+          'resources', 'terminal-notifier.app', 'Contents', 'MacOS', 'terminal-notifier'
+        ).fsPath;
+        const fallbackOsascript = () => {
+          // AppleScript 字符串转义（execFile 不经过 shell，无注入风险）
+          const esc = (s: string) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          let script = `display notification "${esc(body)}" with title "${esc(title)}"`;
+          if (withSound) {
+            script += ' sound name "Glass"';
+          }
+          execFile('osascript', ['-e', script], () => {});
+        };
+        // vsix 解包可能丢失可执行位，先补一把（失败无妨，走后续回退）
+        try { fs.chmodSync(bundledTn, 0o755); } catch { /* ignore */ }
+        execFile(bundledTn, tnArgs, (err) => {
+          if (!err) return;
+          execFile('terminal-notifier', tnArgs, (err2) => {
+            if (!err2) return;
+            fallbackOsascript();
+          });
+        });
       } else if (process.platform === 'win32') {
         // PowerShell 单引号字符串转义
         const esc = (s: string) => s.replace(/'/g, "''");
@@ -591,6 +664,9 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
           "$texts = $template.GetElementsByTagName('text');",
           `$null = $texts.Item(0).AppendChild($template.CreateTextNode('${esc(title)}'));`,
           `$null = $texts.Item(1).AppendChild($template.CreateTextNode('${esc(body)}'));`,
+          // 点击 toast 通过 protocol 激活 deep link，把 IDE 带回前台并聚焦反馈面板
+          `$template.DocumentElement.SetAttribute('activationType', 'protocol');`,
+          `$template.DocumentElement.SetAttribute('launch', '${esc(deepLink)}');`,
           ...(withSound ? [] : [
             "$audio = $template.CreateElement('audio');",
             "$audio.SetAttribute('silent', 'true');",
@@ -684,6 +760,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     if (!this._currentRequest) return;
     this._seenRequestIds.add(this._currentRequest.id);
     this._currentRequest = null;
+    this._currentRequestPort = null;
     this._showWaitingState();
     this._view?.webview.postMessage({ type: 'externalResolved' });
   }
@@ -710,9 +787,10 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     attachedFiles: string[];
     project_directory: string;
   }) {
-    // 使用活跃端口提交反馈
-    const port = this._activePort || this._basePort;
-    
+    // 提交到「当前请求所属」的端口：请求与端口强绑定，绝不能退回 basePort——
+    // 多项目同时触发时 basePort 可能是别的项目的 server，会得到 "Request not found"
+    const port = this._currentRequestPort || this._activePort || this._basePort;
+
     try {
       const response = await this._httpPost(
         `http://127.0.0.1:${port}/api/feedback/submit`,
@@ -730,7 +808,14 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       const result = JSON.parse(response);
       if (result.success) {
         this._currentRequest = null;
+        this._currentRequestPort = null;
         this._showWaitingState();
+        // 提交结果轻提示：区分「已直接送达」与「撞上超时空窗、已暂存待下一轮」，
+        // 让用户确定反馈发出去了（webview 同时借此把本次提交写入历史记录）
+        this._view?.webview.postMessage({
+          type: 'feedbackSubmitted',
+          payload: { queued: !!result.queued }
+        });
       } else {
         vscode.window.showErrorMessage(this._i18n.submitFailed + ': ' + result.error);
       }
@@ -907,6 +992,45 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     this._autoRetry = v;
     this._memento?.update('autoRetry', v);
     this._postAutoRetryState();
+  }
+
+  /**
+   * 暂停/恢复当前请求的超时倒计时：转发给 MCP server（真实计时器在 server 端），
+   * server 确认后把最新暂停态回推 WebView 刷新显示。
+   */
+  private async _handleTogglePause(payload: { requestId?: string; paused?: boolean }) {
+    const requestId = payload?.requestId;
+    if (!requestId || typeof payload?.paused !== 'boolean') return;
+    const port = this._currentRequestPort || this._activePort || this._basePort;
+    try {
+      const response = await this._httpPost(
+        `http://127.0.0.1:${port}/api/feedback/pause`,
+        JSON.stringify({ requestId, paused: payload.paused })
+      );
+      const result = JSON.parse(response);
+      if (result.success) {
+        this._view?.webview.postMessage({
+          type: 'pauseState',
+          payload: { requestId, paused: result.paused, remainingMs: result.remainingMs }
+        });
+      }
+    } catch {
+      // server 不支持（旧版本）或未连接：静默降级，倒计时照常走
+    }
+  }
+
+  /**
+   * 轮询时把 server 的暂停态回推 WebView（server 为真相源；每秒校准一次，
+   * 面板重建 / 切换侧边栏后也能恢复正确的暂停显示与剩余时间）
+   */
+  private _maybeSyncPause(pause: unknown) {
+    if (!pause || typeof pause !== 'object') return;
+    const p = pause as { requestId?: string; paused?: boolean; remainingMs?: number };
+    if (!this._currentRequest || p.requestId !== this._currentRequest.id) return;
+    this._view?.webview.postMessage({
+      type: 'pauseState',
+      payload: { requestId: p.requestId, paused: !!p.paused, remainingMs: p.remainingMs }
+    });
   }
 
   /**
@@ -1198,6 +1322,12 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         ? v.replace(/\{(\w+)\}/g, (m, name) => placeholders[name] ?? m)
         : (v as string);
     }
+    // 通知权限排查提示按平台注入（linux 的 notify-send 基本不会被拒，留空则前端整行隐藏）
+    i18nResolved['notifyTroubleshoot'] = process.platform === 'darwin'
+      ? this._i18n.notifyTroubleshootMac
+      : process.platform === 'win32'
+        ? this._i18n.notifyTroubleshootWin
+        : '';
 
     // 替换占位符
     htmlTemplate = htmlTemplate
@@ -1209,7 +1339,9 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       .replace(/\{\{SCRIPT_JS_URI\}\}/g, scriptJsUri.toString())
       .replace(/\{\{I18N_JSON\}\}/g, JSON.stringify(i18nResolved))
       .replace(/\{\{i18n\.(\w+)\}\}/g, (_, key) => {
-        return i18nResolved[key] || key;
+        // 用 undefined 判断而非 ||：空字符串是合法值（如 linux 的 notifyTroubleshoot 留空以隐藏整行），
+        // 用 || 会把 key 名渲染到界面上
+        return i18nResolved[key] !== undefined ? i18nResolved[key] : key;
       });
 
     return htmlTemplate;

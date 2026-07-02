@@ -10,7 +10,9 @@
     remove: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
     file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/>',
     folder: '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
-    code: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>'
+    code: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
+    pencil: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>'
   };
   function svg(paths, cls) {
     const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -72,6 +74,8 @@
   const timeoutWrap = document.getElementById('timeoutWrap');
   const timeoutBar = document.getElementById('timeoutBar');
   const timeoutInfo = document.getElementById('timeoutInfo');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const quickReplies = document.getElementById('quickReplies');
   const toggleKeyModeBtn = document.getElementById('toggleKeyModeBtn');
   const dropOverlay = document.getElementById('dropOverlay');
   const summaryCard = document.getElementById('summaryCard');
@@ -96,6 +100,11 @@
   const feishuAckToggle = document.getElementById('feishuAckToggle');
   const osNotifySub = document.getElementById('osNotifySub');
   const feishuAckSub = document.getElementById('feishuAckSub');
+  const notifyTestBtn = document.getElementById('notifyTestBtn');
+  const notifyTestHint = document.getElementById('notifyTestHint');
+  const historyBtn = document.getElementById('historyBtn');
+  const historyPopup = document.getElementById('historyPopup');
+  const toastEl = document.getElementById('toast');
 
   let uploadedImages = [];
   let attachedFiles = [];
@@ -106,6 +115,11 @@
   let requestTimeout = 300;
   let countdownInterval = null;
   let submitFallbackTimer = null;
+  // 倒计时暂停态：真相源在 MCP server（HTTP 指令暂停/恢复真实计时器），
+  // 这里只维护显示用的锚点，poll 每秒回传的 pauseState 会持续校准，不怕 webview 重建。
+  let cdPaused = false;
+  let cdRemainingMs = 0;
+  let cdAnchor = 0;
 
   // ---------- Language switch ----------
   langSwitchBtn.addEventListener('click', () => {
@@ -224,6 +238,15 @@
   });
   feishuAckToggle.addEventListener('change', () => {
     vscode.postMessage({ type: 'toggleFeishuAck', payload: { enabled: feishuAckToggle.checked } });
+  });
+
+  // 发送测试通知：一键验证系统通知链路通不通（权限被拒时收不到，配合上方排查提示定位）
+  let notifyTestHintTimer = null;
+  notifyTestBtn.addEventListener('click', () => {
+    vscode.postMessage({ type: 'testNotification' });
+    notifyTestHint.textContent = i18n.notifyTestSentHint || 'Sent — check your system notifications.';
+    if (notifyTestHintTimer) clearTimeout(notifyTestHintTimer);
+    notifyTestHintTimer = setTimeout(() => { notifyTestHint.textContent = ''; }, 8000);
   });
 
   // 子开关受主开关约束：主关时子置灰禁用
@@ -710,28 +733,311 @@
     if (!document.hidden) restoreSummaryHeight();
   });
 
+  // ---------- Quick replies (一键发送的快捷短语，可编辑，存 localStorage) ----------
+  const QUICK_REPLY_KEY = 'cursorFeedback_quickReplies';
+  let quickReplyEditing = false;
+
+  function defaultQuickReplies() {
+    return [
+      i18n.quickReplyDefault1 || 'Keep waiting for my feedback',
+      i18n.quickReplyDefault2 || 'End the task'
+    ];
+  }
+
+  function loadQuickReplies() {
+    try {
+      const raw = localStorage.getItem(QUICK_REPLY_KEY);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) {
+          return arr.filter((s) => typeof s === 'string' && s.trim()).slice(0, 20);
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return defaultQuickReplies();
+  }
+
+  function saveQuickReplies(list) {
+    try { localStorage.setItem(QUICK_REPLY_KEY, JSON.stringify(list)); } catch (e) { /* ignore */ }
+  }
+
+  // 点击快捷短语＝立即提交。已有草稿时把短语追加到末尾一起发，不悄悄丢弃用户已输入的内容
+  function sendQuickReply(phrase) {
+    if (!currentRequestId || submitBtn.disabled) return;
+    const cur = feedbackInput.value.trim();
+    feedbackInput.value = cur ? cur + '\n' + phrase : phrase;
+    saveDraft();
+    updateCharCount();
+    submitFeedback();
+  }
+
+  // 编辑模式下把「添加输入框」里未回车的内容也收进列表（防止用户直接点完成而丢词）
+  function commitQuickReplyDraft() {
+    const inp = quickReplies.querySelector('.quick-add-input');
+    const v = inp && inp.value.trim();
+    if (!v) return;
+    const next = loadQuickReplies();
+    if (!next.includes(v)) {
+      next.push(v);
+      saveQuickReplies(next);
+    }
+  }
+
+  function renderQuickReplies() {
+    if (!quickReplies) return;
+    const list = loadQuickReplies();
+    quickReplies.innerHTML = '';
+
+    list.forEach((phrase, idx) => {
+      // 编辑态用 span：chip 内含删除按钮，button 嵌 button 不合法
+      const chip = document.createElement(quickReplyEditing ? 'span' : 'button');
+      if (!quickReplyEditing) chip.type = 'button';
+      chip.className = 'quick-chip' + (quickReplyEditing ? ' is-editing' : '');
+      chip.title = quickReplyEditing ? phrase : ((i18n.quickReplySendTip || 'Click to send') + ' · ' + phrase);
+
+      const label = document.createElement('span');
+      label.className = 'quick-chip__label';
+      label.textContent = phrase;
+      chip.appendChild(label);
+
+      if (quickReplyEditing) {
+        chip.appendChild(makeRemoveBtn(() => {
+          const next = loadQuickReplies();
+          next.splice(idx, 1);
+          saveQuickReplies(next);
+          renderQuickReplies();
+        }));
+      } else {
+        chip.addEventListener('click', () => sendQuickReply(phrase));
+      }
+      quickReplies.appendChild(chip);
+    });
+
+    if (quickReplyEditing) {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.className = 'quick-add-input';
+      input.placeholder = i18n.quickReplyAddPlaceholder || 'Type a phrase and press Enter';
+      input.addEventListener('keydown', (e) => {
+        if (e.isComposing) return;
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const v = input.value.trim();
+          if (!v) return;
+          const next = loadQuickReplies();
+          if (!next.includes(v)) {
+            next.push(v);
+            saveQuickReplies(next);
+          }
+          renderQuickReplies();
+          const ni = quickReplies.querySelector('.quick-add-input');
+          if (ni) ni.focus();
+        } else if (e.key === 'Escape') {
+          quickReplyEditing = false;
+          renderQuickReplies();
+        }
+      });
+      quickReplies.appendChild(input);
+    }
+
+    const editBtn = document.createElement('button');
+    editBtn.type = 'button';
+    editBtn.className = 'iconbtn quick-edit-btn' + (quickReplyEditing ? ' is-on' : '');
+    const tip = quickReplyEditing
+      ? (i18n.quickReplyDone || 'Done editing')
+      : (i18n.quickReplyEdit || 'Edit quick replies');
+    editBtn.setAttribute('aria-label', tip);
+    editBtn.setAttribute('data-tip', tip);
+    editBtn.appendChild(svg(quickReplyEditing ? ICONS.check : ICONS.pencil));
+    editBtn.addEventListener('click', () => {
+      if (quickReplyEditing) commitQuickReplyDraft();
+      quickReplyEditing = !quickReplyEditing;
+      renderQuickReplies();
+      if (quickReplyEditing) {
+        const ni = quickReplies.querySelector('.quick-add-input');
+        if (ni) ni.focus();
+      }
+    });
+    quickReplies.appendChild(editBtn);
+  }
+  renderQuickReplies();
+
+  // ---------- Toast (提交结果轻提示) ----------
+  let toastTimer = null;
+  function showToast(text) {
+    toastEl.textContent = text;
+    toastEl.classList.remove('hidden');
+    // 重触发进入动画
+    toastEl.classList.remove('is-in');
+    void toastEl.offsetWidth;
+    toastEl.classList.add('is-in');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toastEl.classList.remove('is-in');
+      toastTimer = setTimeout(() => toastEl.classList.add('hidden'), 300);
+    }, 3500);
+  }
+
+  // ---------- Feedback history (最近提交的反馈，点击回填) ----------
+  // 只存文本不存图片（图片 base64 太大会撑爆 localStorage）；上限 20 条
+  const HISTORY_KEY = 'cursorFeedback_history';
+  const HISTORY_MAX = 20;
+  let historyOpen = false;
+  // 提交发出时暂存文本，等 extension 确认成功（feedbackSubmitted）后才写入历史，
+  // 避免提交失败的内容混进历史
+  let pendingHistoryText = '';
+
+  function loadHistory() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+      if (Array.isArray(arr)) {
+        return arr.filter((e) => e && typeof e.text === 'string' && e.text.trim());
+      }
+    } catch (e) { /* ignore */ }
+    return [];
+  }
+
+  function pushHistory(text) {
+    const t = (text || '').trim();
+    if (!t) return; // 纯图片/附件提交没有文本，不记
+    let list = loadHistory();
+    // 与最近一条相同（如快捷短语连点）就只刷新时间，不堆重复条目
+    list = list.filter((e) => e.text !== t);
+    list.unshift({ text: t, at: Date.now() });
+    if (list.length > HISTORY_MAX) list = list.slice(0, HISTORY_MAX);
+    try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list)); } catch (e) { /* ignore */ }
+  }
+
+  function formatHistoryTime(at) {
+    const d = new Date(at);
+    const pad = (n) => String(n).padStart(2, '0');
+    const hm = pad(d.getHours()) + ':' + pad(d.getMinutes());
+    const now = new Date();
+    const sameDay = d.getFullYear() === now.getFullYear() &&
+      d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+    return sameDay ? hm : (pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' + hm);
+  }
+
+  function positionHistoryPopup() {
+    const r = historyBtn.getBoundingClientRect();
+    historyPopup.style.left = '8px';
+    historyPopup.style.right = '8px';
+    historyPopup.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+    historyPopup.style.maxHeight = Math.min(280, r.top - 12) + 'px';
+  }
+
+  function renderHistoryPopup() {
+    const list = loadHistory();
+    historyPopup.innerHTML = '';
+    if (list.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'mention-empty';
+      empty.textContent = i18n.historyEmpty || 'No history yet';
+      historyPopup.appendChild(empty);
+      return;
+    }
+    list.forEach((entry) => {
+      const item = document.createElement('div');
+      item.className = 'history-item';
+      item.title = entry.text;
+
+      const text = document.createElement('span');
+      text.className = 'history-item__text';
+      text.textContent = entry.text.replace(/\s+/g, ' ');
+      item.appendChild(text);
+
+      const time = document.createElement('span');
+      time.className = 'history-item__time';
+      time.textContent = formatHistoryTime(entry.at);
+      item.appendChild(time);
+
+      item.appendChild(makeRemoveBtn((ev) => {
+        ev.stopPropagation();
+        const next = loadHistory().filter((e) => !(e.text === entry.text && e.at === entry.at));
+        try { localStorage.setItem(HISTORY_KEY, JSON.stringify(next)); } catch (e) { /* ignore */ }
+        renderHistoryPopup();
+      }, 'history-item__remove'));
+
+      // 点击回填：已有草稿则换行追加，不覆盖用户正在写的内容
+      item.addEventListener('click', () => {
+        const cur = feedbackInput.value;
+        feedbackInput.value = cur.trim() ? cur.replace(/\n?$/, '\n') + entry.text : entry.text;
+        saveDraft();
+        updateCharCount();
+        closeHistoryPopup();
+        feedbackInput.focus();
+      });
+      historyPopup.appendChild(item);
+    });
+  }
+
+  function openHistoryPopup() {
+    renderHistoryPopup();
+    positionHistoryPopup();
+    historyPopup.classList.remove('hidden');
+    historyOpen = true;
+  }
+  function closeHistoryPopup() {
+    historyPopup.classList.add('hidden');
+    historyOpen = false;
+  }
+  historyBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (historyOpen) closeHistoryPopup();
+    else openHistoryPopup();
+  });
+  document.addEventListener('click', (e) => {
+    if (historyOpen && !historyPopup.contains(e.target)) closeHistoryPopup();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && historyOpen) closeHistoryPopup();
+  });
+
   // ---------- Countdown + progress bar ----------
+  function updatePauseUI() {
+    timeoutWrap.classList.toggle('is-paused', cdPaused);
+    const tip = cdPaused
+      ? (i18n.resumeCountdown || 'Resume countdown')
+      : (i18n.pauseCountdown || 'Pause countdown');
+    pauseBtn.setAttribute('data-tip', tip);
+    pauseBtn.setAttribute('aria-label', tip);
+  }
+
+  function currentRemainingMs() {
+    return cdPaused ? cdRemainingMs : Math.max(0, cdRemainingMs - (Date.now() - cdAnchor));
+  }
+
   function updateCountdown() {
-    if (!requestTimestamp || !requestTimeout) return;
-    const elapsed = Math.floor((Date.now() - requestTimestamp) / 1000);
-    const remaining = Math.max(0, requestTimeout - elapsed);
+    if (!requestTimeout) return;
+    const totalMs = requestTimeout * 1000;
+    const remainingMs = currentRemainingMs();
+    const remaining = Math.max(0, Math.round(remainingMs / 1000));
     const minutes = Math.floor(remaining / 60);
     const seconds = remaining % 60;
-    const ratio = Math.max(0, Math.min(1, remaining / requestTimeout));
+    const ratio = Math.max(0, Math.min(1, remainingMs / totalMs));
 
     timeoutBar.style.width = (ratio * 100) + '%';
-    timeoutWrap.classList.toggle('is-warning', ratio <= 0.25 && ratio > 0.1);
-    timeoutWrap.classList.toggle('is-danger', ratio <= 0.1);
+    timeoutWrap.classList.toggle('is-warning', !cdPaused && ratio <= 0.25 && ratio > 0.1);
+    timeoutWrap.classList.toggle('is-danger', !cdPaused && ratio <= 0.1);
 
-    const label = i18n.remainingTime || 'Remaining time';
+    const label = cdPaused ? (i18n.pausedLabel || 'Paused') : (i18n.remainingTime || 'Remaining time');
     timeoutInfo.textContent = label + ' ' + minutes + ':' + seconds.toString().padStart(2, '0');
 
-    if (remaining <= 0) {
+    if (!cdPaused && remainingMs <= 0) {
       clearInterval(countdownInterval);
       countdownInterval = null;
       timeoutInfo.textContent = i18n.timeout || 'Timeout';
     }
   }
+
+  // 暂停/恢复：发给插件 → HTTP 通知 MCP server 冻结/重排真实计时器；UI 待 server 确认后刷新
+  pauseBtn.addEventListener('click', () => {
+    if (!currentRequestId) return;
+    vscode.postMessage({
+      type: 'togglePause',
+      payload: { requestId: currentRequestId, paused: !cdPaused }
+    });
+  });
 
   // ---------- Submit ----------
   function setSubmitting(on) {
@@ -778,11 +1084,13 @@
     if (!currentRequestId || submitBtn.disabled) return;
 
     setSubmitting(true);
+    // 先暂存本次文本，等 extension 确认成功后写入历史（提交失败不入历史）
+    pendingHistoryText = buildFeedbackText();
     vscode.postMessage({
       type: 'submitFeedback',
       payload: {
         requestId: currentRequestId,
-        interactive_feedback: buildFeedbackText(),
+        interactive_feedback: pendingHistoryText,
         images: uploadedImages.map(im => ({ name: im.name, data: im.dataUrl.split(',')[1], size: im.size })),
         attachedFiles: attachedFiles,
         project_directory: currentProjectDir
@@ -826,6 +1134,10 @@
         currentProjectDir = message.payload.projectDir;
         requestTimestamp = message.payload.timestamp;
         requestTimeout = message.payload.timeout;
+        cdPaused = false;
+        cdRemainingMs = Math.max(0, requestTimeout * 1000 - (Date.now() - requestTimestamp));
+        cdAnchor = Date.now();
+        updatePauseUI();
         summaryContent.innerHTML = renderMarkdown(message.payload.summary);
         highlightCodeBlocks(summaryContent);
         summaryContent.scrollTop = 0;
@@ -848,6 +1160,8 @@
         submitBar.classList.add('hidden');
         waitingStatus.classList.remove('hidden');
         timeoutWrap.hidden = true;
+        cdPaused = false;
+        updatePauseUI();
         break;
 
       case 'serverStatus':
@@ -919,8 +1233,35 @@
         updateAutoRetryUI(!!message.payload.enabled);
         break;
 
+      case 'pauseState': {
+        // server 是暂停态与剩余时间的真相源：按钮确认与每秒 poll 都走这里持续校准，
+        // webview 重建后也能恢复正确的暂停显示
+        const p = message.payload || {};
+        if (!currentRequestId || p.requestId !== currentRequestId) break;
+        cdPaused = !!p.paused;
+        if (typeof p.remainingMs === 'number') {
+          cdRemainingMs = Math.max(0, p.remainingMs);
+          cdAnchor = Date.now();
+        }
+        updatePauseUI();
+        if (!countdownInterval && (cdPaused || cdRemainingMs > 0)) {
+          countdownInterval = setInterval(updateCountdown, 1000);
+        }
+        updateCountdown();
+        break;
+      }
+
       case 'feishuState':
         updateFeishuUI(message.payload);
+        break;
+
+      case 'feedbackSubmitted':
+        // 提交已被 server 确认：写入历史 + 轻提示（queued = 撞上超时空窗、暂存待下一轮送达）
+        pushHistory(pendingHistoryText);
+        pendingHistoryText = '';
+        showToast(message.payload && message.payload.queued
+          ? (i18n.toastQueued || 'Queued — will be delivered to AI next round')
+          : (i18n.toastSubmitted || 'Feedback sent'));
         break;
     }
   });

@@ -73,6 +73,9 @@
           <h2 id="feedbackLabel" class="card__title">{{i18n.yourFeedback}}</h2>
         </div>
 
+        <!-- 快捷回复短语：点击直接发送；铅笔进入编辑模式可增删自定义 -->
+        <div id="quickReplies" class="quick-replies"></div>
+
         <div class="composer">
           <div id="refChips" class="ref-chips"></div>
           <textarea id="feedbackInput" class="composer__input" rows="4"
@@ -87,6 +90,9 @@
               </button>
               <button id="insertContextBtn" class="iconbtn" type="button" data-tip="{{i18n.insertSelection}}" aria-label="{{i18n.insertSelection}}">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+              </button>
+              <button id="historyBtn" class="iconbtn" type="button" data-tip="{{i18n.historyBtn}}" aria-label="{{i18n.historyBtn}}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
               </button>
             </div>
             <span class="composer__hint">{{i18n.contextHint}}</span>
@@ -104,6 +110,10 @@
     <footer id="submitBar" class="submitbar hidden">
       <!-- 倒计时进度 -->
       <div id="timeoutWrap" class="countdown" hidden>
+        <button id="pauseBtn" class="iconbtn countdown__pause" type="button" aria-label="{{i18n.pauseCountdown}}" data-tip="{{i18n.pauseCountdown}}">
+          <svg class="countdown__pause-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+          <svg class="countdown__play-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg>
+        </button>
         <div class="countdown__track" role="progressbar" aria-label="Time remaining">
           <div id="timeoutBar" class="countdown__bar"></div>
         </div>
@@ -164,6 +174,12 @@
             <span class="feishu-switch__track"><span class="feishu-switch__thumb"></span></span>
           </label>
           <p class="feishu-modal__desc feishu-modal__desc--sub">{{i18n.osNotifyDesc}}</p>
+          <!-- 权限被拒的排查指引（按平台注入文案，linux 为空则整行隐藏） -->
+          <p class="feishu-modal__desc feishu-modal__desc--sub feishu-troubleshoot">{{i18n.notifyTroubleshoot}}</p>
+          <div class="feishu-test-row">
+            <button id="notifyTestBtn" class="feishu-link" type="button">{{i18n.notifyTestBtn}}</button>
+            <span id="notifyTestHint" class="feishu-test-hint"></span>
+          </div>
         </div>
       </div>
 
@@ -211,6 +227,12 @@
 
   <!-- @ 文件引用浮层（fixed 定位，避免被裁切） -->
   <div id="mentionPopup" class="mention-popup hidden" role="listbox" aria-label="{{i18n.mentionFiles}}"></div>
+
+  <!-- 反馈历史浮层（点击条目回填到输入框） -->
+  <div id="historyPopup" class="history-popup hidden" role="listbox" aria-label="{{i18n.historyBtn}}"></div>
+
+  <!-- 提交结果轻提示（toast，几秒后自动消失） -->
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
   <!-- 注入 i18n 数据 -->
   <script>window.i18n = {{I18N_JSON}};</script>

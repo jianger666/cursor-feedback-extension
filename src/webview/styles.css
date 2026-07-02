@@ -664,6 +664,144 @@ body.vscode-light .hljs-regexp { color: #811f3f; }
 }
 .ref-chip .chip-remove:hover { opacity: 1; background: transparent; color: var(--vscode-errorForeground, #e51400); }
 
+/* ---------- Quick replies (一键发送短语) ---------- */
+.quick-replies {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.quick-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 3px 10px;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-sunken));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line-soft));
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
+}
+.quick-chip:hover {
+  background: color-mix(in srgb, var(--accent) 20%, var(--surface-sunken));
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line-soft));
+  transform: translateY(-1px);
+}
+.quick-chip:active { transform: translateY(0); }
+.quick-chip.is-editing { cursor: default; }
+.quick-chip.is-editing:hover { transform: none; }
+.quick-chip__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+.quick-chip .chip-remove {
+  position: static;
+  width: 14px;
+  height: 14px;
+  opacity: 0.6;
+  background: transparent;
+  color: var(--muted);
+}
+.quick-chip .chip-remove:hover { opacity: 1; background: transparent; color: var(--vscode-errorForeground, #e51400); }
+.quick-edit-btn { width: 22px; height: 22px; }
+.quick-edit-btn svg { width: 12px; height: 12px; }
+.quick-add-input {
+  width: 150px;
+  padding: 3px 10px;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--vscode-input-foreground, var(--vscode-foreground));
+  background: var(--vscode-input-background, var(--surface-sunken));
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+}
+.quick-add-input:focus { outline: none; border-color: var(--accent); border-style: solid; }
+.quick-add-input::placeholder { color: var(--vscode-input-placeholderForeground, var(--muted)); opacity: 0.8; }
+
+/* ---------- Toast (提交结果轻提示) ---------- */
+.toast {
+  position: fixed;
+  top: 40px;
+  left: 50%;
+  z-index: 60;
+  max-width: calc(100% - 32px);
+  padding: 6px 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--vscode-foreground);
+  background: var(--surface-raised, var(--vscode-editorWidget-background, #252526));
+  border: 1px solid color-mix(in srgb, var(--vscode-charts-green, #3fb950) 45%, var(--line-soft));
+  border-left: 3px solid var(--vscode-charts-green, #3fb950);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  transform: translate(-50%, -6px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  pointer-events: none;
+}
+.toast.is-in { opacity: 1; transform: translate(-50%, 0); }
+.toast.hidden { display: none; }
+
+/* ---------- Feedback history (反馈历史浮层) ---------- */
+.history-popup {
+  position: fixed;
+  z-index: 50;
+  overflow-y: auto;
+  background: var(--surface-raised, var(--vscode-editorWidget-background, #252526));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+  padding: 4px;
+}
+.history-popup.hidden { display: none; }
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.history-item:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.history-item__text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--vscode-foreground);
+}
+.history-item__time {
+  flex: none;
+  font-size: 10px;
+  color: var(--muted);
+}
+.history-item .chip-remove.history-item__remove {
+  position: static;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  opacity: 0.5;
+  background: transparent;
+  color: var(--muted);
+}
+.history-item .chip-remove.history-item__remove:hover {
+  opacity: 1;
+  background: transparent;
+  color: var(--vscode-errorForeground, #e51400);
+}
+
 /* ---------- Countdown ---------- */
 .countdown {
   display: flex;
@@ -671,6 +809,18 @@ body.vscode-light .hljs-regexp { color: #811f3f; }
   gap: var(--sp-2);
 }
 .countdown[hidden] { display: none; }
+.countdown__pause {
+  width: 22px;
+  height: 22px;
+  flex: none;
+}
+.countdown__pause svg { width: 12px; height: 12px; }
+.countdown__play-icon { display: none; }
+.countdown.is-paused .countdown__pause-icon { display: none; }
+.countdown.is-paused .countdown__play-icon { display: block; }
+.countdown.is-paused .countdown__pause { color: var(--accent); opacity: 1; }
+.countdown.is-paused .countdown__bar { background: var(--muted); }
+.countdown.is-paused .countdown__text { color: var(--muted); }
 .countdown__track {
   flex: 1;
   height: 4px;
@@ -990,6 +1140,19 @@ body.vscode-light .hljs-regexp { color: #811f3f; }
 }
 .feishu-subitem.is-disabled { opacity: 0.45; pointer-events: none; }
 .feishu-modal__desc--sub { font-size: 11px; opacity: 0.9; }
+/* 通知排查提示：linux 等平台文案为空时整行隐藏 */
+.feishu-troubleshoot { opacity: 0.7; }
+.feishu-troubleshoot:empty { display: none; }
+.feishu-test-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.feishu-test-hint {
+  font-size: 11px;
+  color: var(--vscode-charts-green, #3fb950);
+}
 .feishu-input-wrap { position: relative; display: flex; align-items: center; }
 .feishu-input-wrap .feishu-input { width: 100%; padding-right: 34px; box-sizing: border-box; }
 .feishu-eye {
