@@ -168,6 +168,11 @@ class McpFeedbackServer {
   // 只有来自同一工作区的轮询才会更新活动时间
   private ownerWorkspace: string | null = null;
 
+  // owner 身份是否已被真实窗口的轮询验证过。验证后 ownerWorkspace 不再被后续调用改写：
+  // AI 传的 project_directory 是「正在操作的项目」，不一定等于窗口工作区（同窗口操作兄弟/子目录很常见），
+  // 每次改写会让插件心跳失配 → 实例被防线 3 当僵尸误杀（等待反馈中直接 Connection closed）。
+  private ownerConfirmed: boolean = false;
+
   // Server 启动时间
   private readonly startTime: number = Date.now();
 
@@ -185,6 +190,10 @@ class McpFeedbackServer {
 
   // 看门狗定时器（兜底退出，防止进程残留 / CPU 占满）
   private watchdogTimer: NodeJS.Timeout | null = null;
+
+  // stop() 防重入：server.close() 会触发 transport.onclose → 回调里又调 stop()，
+  // 无标志位会无限递归直至 "Maximum call stack size exceeded"（日志曾刷出数万条 Stopping server...）
+  private stopping: boolean = false;
 
   constructor(port: number = 8766) {
     this.port = port;
@@ -335,9 +344,19 @@ class McpFeedbackServer {
     //（即你看到的两个一模一样的 cursor-feedback-extension）。
     this.cancelStalePending(projectDir);
 
-    // AI 调用 feedback 时设置 ownerWorkspace（这是唯一正确的时机）
-    this.ownerWorkspace = this.normalizePath(projectDir);
-    debugLog(`Owner workspace set to: ${this.ownerWorkspace}`);
+    // AI 调用 feedback 时设置 ownerWorkspace；但 owner 一旦被真实窗口的轮询验证过（ownerConfirmed）
+    // 就锁定不再改写——project_directory 只代表 AI 正在操作的项目，改写已验证的窗口身份
+    // 会让心跳失配、实例被防线 3 误杀。
+    const normalizedProjectDir = this.normalizePath(projectDir);
+    if (!this.ownerConfirmed) {
+      this.ownerWorkspace = normalizedProjectDir;
+      debugLog(`Owner workspace set to: ${this.ownerWorkspace}`);
+    } else if (normalizedProjectDir !== this.ownerWorkspace) {
+      debugLog(
+        `Owner workspace kept as ${this.ownerWorkspace} (confirmed by window polling); ` +
+        `request project ${normalizedProjectDir} differs and does not rewrite owner`
+      );
+    }
     
     // 创建反馈请求
     this.currentRequest = {
@@ -557,6 +576,16 @@ class McpFeedbackServer {
   /** 归一化路径用于跨进程/跨平台比对（统一斜杠、去尾斜杠、小写） */
   private normalizePath(p: string): string {
     return (p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  }
+
+  /**
+   * 两个已归一化的路径是否属于同一窗口语境：相等，或一方是另一方的子目录。
+   * 用于 owner 心跳匹配——AI 传的 project_directory 常是窗口工作区的子目录（monorepo 子包等），
+   * 精确相等会漏判、心跳失配导致实例被防线 3 误杀。
+   */
+  private pathsRelated(a: string, b: string): boolean {
+    if (!a || !b) return false;
+    return a === b || a.startsWith(b + '/') || b.startsWith(a + '/');
   }
 
   /** 飞书回复命中某 requestId → resolve 该 pending，并回执用户 */
@@ -1101,10 +1130,13 @@ class McpFeedbackServer {
             // 「我的窗口」心跳：仅当轮询带的 workspace 匹配本实例归属时刷新。
             // 别的活跃窗口对全端口的扫描虽刷 lastActivityTime，但 workspace 不匹配、不刷此字段，
             // 故已关窗口的残留 server 不会被别人续命，可被 watchdog / 僵尸自检识别。
+            // 匹配放宽为「路径互为前缀」：AI 传的 project_directory 可能是窗口工作区的子目录。
+            // 命中即确认 owner 身份（ownerConfirmed），此后 owner 不再被后续调用改写。
             const ws = this.normalizePath(u.searchParams.get('workspace') || '');
-            if (ws && ws === this.ownerWorkspace) {
+            if (ws && this.ownerWorkspace && this.pathsRelated(ws, this.ownerWorkspace)) {
               this.lastOwnerPollTime = Date.now();
               this.everOwnerPolled = true;
+              this.ownerConfirmed = true;
             }
           } catch {
             // 忽略解析错误
@@ -1542,8 +1574,15 @@ class McpFeedbackServer {
 
       // 防线 3：本实例曾被自己窗口插件轮询，但久未再收到（只剩别的活跃窗口在扫端口刷 lastActivityTime）
       // → 我的窗口已关、本实例是僵尸 → 退出，避免持续被全局 pending 计数误算成「另一个在等的窗口」。
+      // ⚠️ 与防线 2 同款约束：还有 pending 反馈在等用户时绝不退——曾因缺这一条，AI 在等待反馈期间
+      //    传了与窗口工作区不同的 project_directory（改写 owner 后心跳失配），30 秒后实例被当僵尸杀掉，
+      //    正在等待的 interactive_feedback 直接报 "MCP error -32000: Connection closed"。
       const ownerIdle = Date.now() - this.lastOwnerPollTime;
-      if (this.everOwnerPolled && ownerIdle > IDLE_TIMEOUT) {
+      if (
+        this.everOwnerPolled &&
+        this.pendingRequests.size === 0 &&
+        ownerIdle > IDLE_TIMEOUT
+      ) {
         debugLog(`Owner window idle for ${ownerIdle}ms, stale instance, exiting...`);
         this.stop();
         process.exit(0);
@@ -1555,9 +1594,13 @@ class McpFeedbackServer {
   }
 
   /**
-   * 停止服务器
+   * 停止服务器（幂等：重复调用 / server.close() 触发 onclose 再次进入时直接返回）
    */
   stop(): void {
+    if (this.stopping) {
+      return;
+    }
+    this.stopping = true;
     debugLog('Stopping server...');
 
     // 关闭看门狗定时器

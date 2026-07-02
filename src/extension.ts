@@ -12,6 +12,12 @@ function normalizePath(p: string): string {
   return (p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 
+/** 两个已归一化的路径互为前缀（相等 / 一方是另一方的子目录）即视为同一窗口语境 */
+function pathsRelated(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  return a === b || a.startsWith(b + '/') || b.startsWith(a + '/');
+}
+
 export function activate(context: vscode.ExtensionContext) {
   // 注册侧边栏 WebView（端口从 61927 开始自动扫描）
   feedbackViewProvider = new FeedbackViewProvider(context.extensionUri, 61927, context.globalState);
@@ -114,8 +120,9 @@ function getWorkspacePaths(): string[] {
 }
 
 /**
- * 检查路径是否匹配当前工作区（精确匹配）
- * - 有工作区的窗口：只接收匹配工作区路径的消息
+ * 检查路径是否匹配当前工作区
+ * - 有工作区的窗口：接收匹配工作区路径的消息（相等或互为子目录——AI 传的
+ *   project_directory 常是工作区的子目录，精确匹配会漏收，面板收不到、心跳也失配）
  * - 没有工作区的窗口：只接收没有指定项目路径的消息
  */
 function isPathInWorkspace(targetPath: string): boolean {
@@ -138,9 +145,7 @@ function isPathInWorkspace(targetPath: string): boolean {
   }
   
   for (const wsPath of workspacePaths) {
-    const normalizedWs = normalizePath(wsPath);
-    // 精确匹配：只匹配完全相同的路径
-    if (normalizedTarget === normalizedWs) {
+    if (pathsRelated(normalizedTarget, normalizePath(wsPath))) {
       return true;
     }
   }
@@ -372,10 +377,10 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       if (this._activePort) {
         const result = await this._checkPortForRequest(this._activePort);
         
-        // 检查是否仍然是我们的 Server
+        // 检查是否仍然是我们的 Server（owner 可能是本工作区的子目录：AI 传的 project_directory）
         if (result.connected) {
           const serverOwner = result.ownerWorkspace ? normalizePath(result.ownerWorkspace) : '';
-          const isMyServer = !serverOwner || serverOwner === normalizedCurrentWorkspace;
+          const isMyServer = !serverOwner || pathsRelated(serverOwner, normalizedCurrentWorkspace);
           
           if (isMyServer) {
             // 端口仍然有效，保持使用
@@ -426,7 +431,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
           return false;
         }
         const serverOwner = r.ownerWorkspace ? normalizePath(r.ownerWorkspace) : '';
-        return !serverOwner || serverOwner === normalizedCurrentWorkspace;
+        return !serverOwner || pathsRelated(serverOwner, normalizedCurrentWorkspace);
       }).sort((a, b) => b.request!.timestamp - a.request!.timestamp);
       
       // 处理最新的请求
