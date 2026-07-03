@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.1.2](https://github.com/jianger666/cursor-feedback-extension/compare/v2.1.1...v2.1.2) (2026-07-03)
+
+
+### Bug Fixes
+
+* **mcp:** 多窗口/多对话共用进程的反馈路由修复——按窗口查询 + 重复投递去重 + 暂停保护 ([3b3d451](https://github.com/jianger666/cursor-feedback-extension/commit/3b3d451453ee5a04ce29929845d22191116e0f96))
+
 ### [2.1.1](https://github.com/jianger666/cursor-feedback-extension/compare/v2.1.0...v2.1.1) (2026-07-02)
 
 
