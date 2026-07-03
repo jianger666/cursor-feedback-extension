@@ -89,6 +89,7 @@
   "notifyTestBody": "这是一条测试通知 · 点击试试能否唤起 Cursor",
   "toastSubmitted": "✓ 反馈已发送",
   "toastQueued": "✓ 已暂存，AI 下一轮将自动收到",
+  "pauseFailedEnded": "暂停失败：该请求已结束（超时或已被回复）",
   "historyBtn": "反馈历史",
   "historyEmpty": "还没有历史记录，提交过的反馈会出现在这里"
 }

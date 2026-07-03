@@ -174,7 +174,12 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   private _basePort: number;
   private _activePort: number | null = null;
   private _portScanRange = 20; // 扫描端口范围
-  private _seenRequestIds: Set<string> = new Set(); // 已处理过的请求 ID
+  private _seenRequestIds: Set<string> = new Set(); // 见过的请求 ID（只用于「新鲜提醒」去重，不再挡显示）
+  // 本窗口已提交 / 已被外部渠道结束的请求 ID：绝不复显。
+  // 与 _seenRequestIds 分开的原因：同窗口多对话并存时（如一个等待被暂停、另一对话又发起新等待），
+  // 被覆盖的旧请求在新请求结束后会重新从 server 返回，此时它虽「见过」但没提交过，必须能回到面板；
+  // 旧实现用 seen 一刀切挡显示，旧请求就永远回不来了。
+  private _resolvedRequestIds: Set<string> = new Set();
   private _i18n: I18nMessages;
   // 超时续期开关（由侧边栏按钮切换，随轮询同步给 MCP server）
   private _autoRetry: boolean = true;
@@ -377,17 +382,21 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       if (this._activePort) {
         const result = await this._checkPortForRequest(this._activePort);
         
-        // 检查是否仍然是我们的 Server（owner 可能是本工作区的子目录：AI 传的 project_directory）
+        // 检查是否仍然是我们的 Server。注意：多窗口/多对话共用一个 MCP 进程时，
+        // server 的 ownerWorkspace（进程归属，单值）可能是别的窗口——但只要它按窗口
+        // 返回了本工作区的请求（request 已在 _checkPortForRequest 里按 projectDir 过滤），
+        // 这个端口对本窗口就是有效的，不能因 owner 不匹配而丢弃请求。
         if (result.connected) {
           const serverOwner = result.ownerWorkspace ? normalizePath(result.ownerWorkspace) : '';
-          const isMyServer = !serverOwner || pathsRelated(serverOwner, normalizedCurrentWorkspace);
+          const isMyServer = !!result.request || !serverOwner || pathsRelated(serverOwner, normalizedCurrentWorkspace);
           
           if (isMyServer) {
             // 端口仍然有效，保持使用
             this._debugInfo.connectedPorts = [this._activePort];
             this._debugInfo.activePort = this._activePort;
             
-            if (result.request && !this._seenRequestIds.has(result.request.id)) {
+            // 只挡「已提交/已结束」的请求；_handleNewRequest 内部按当前显示态去重，重复调用无害
+            if (result.request && !this._resolvedRequestIds.has(result.request.id)) {
               this._debugInfo.lastStatus = this._t('statusListening', { port: this._activePort });
               this._handleNewRequest(result.request, this._activePort);
               this._updateDebugInfo();
@@ -425,14 +434,13 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       // 更新已连接的端口列表
       this._debugInfo.connectedPorts = results.filter(r => r.connected).map(r => r.port);
       
-      // 找出属于当前工作区的请求
-      const myRequests = results.filter(r => {
-        if (!r.request || this._seenRequestIds.has(r.request.id)) {
-          return false;
-        }
-        const serverOwner = r.ownerWorkspace ? normalizePath(r.ownerWorkspace) : '';
-        return !serverOwner || pathsRelated(serverOwner, normalizedCurrentWorkspace);
-      }).sort((a, b) => b.request!.timestamp - a.request!.timestamp);
+      // 找出属于当前工作区的请求（只排除已提交/已结束的；「见过但没提交」的仍要能回到面板）。
+      // 不再用 server 进程级 ownerWorkspace 二次过滤：request 已在 _checkPortForRequest
+      // 按本窗口工作区过滤过（isPathInWorkspace）；多窗口共用一个 MCP 进程时 owner 只反映
+      // 首个对话的窗口，按它过滤会把其他窗口的请求全部滤掉（面板不显示、只有飞书收到）。
+      const myRequests = results
+        .filter(r => !!r.request && !this._resolvedRequestIds.has(r.request.id))
+        .sort((a, b) => b.request!.timestamp - a.request!.timestamp);
       
       // 处理最新的请求
       if (myRequests.length > 0) {
@@ -536,48 +544,57 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * 处理新的反馈请求
+   * 处理新的反馈请求。
+   * 幂等：同一请求正在显示时重复调用直接跳过；已提交/已结束的绝不复显；
+   * 「见过但没提交」的请求（同窗口多对话时被新请求覆盖过）允许重新显示，只是不再重复提醒。
    */
   private _handleNewRequest(request: FeedbackRequest, port: number) {
-    // 如果已经处理过这个请求，跳过
-    if (this._seenRequestIds.has(request.id)) {
+    // 已提交 / 已被外部渠道结束 → 绝不复显（防旧版 server 的 currentRequest 清理滞后导致复弹）
+    if (this._resolvedRequestIds.has(request.id)) {
+      return;
+    }
+    // 正在显示的就是它 → 无事可做
+    if (this._currentRequest && request.id === this._currentRequest.id) {
       return;
     }
 
     // 判断是否为"新鲜"请求：创建后 10 秒内被发现
     const requestAge = Date.now() - request.timestamp;
     const isFreshRequest = requestAge < 10000; // 10秒内
-    
-    // 标记为已见过
+
+    // seen 只用于「主动提醒」去重：同一请求只 focus / 系统通知一次，重新回到面板时安静显示
+    const alreadySeen = this._seenRequestIds.has(request.id);
     this._seenRequestIds.add(request.id);
-    
+
     // 清理旧的请求 ID（保留最近 100 个）
     if (this._seenRequestIds.size > 100) {
       const ids = Array.from(this._seenRequestIds);
       this._seenRequestIds = new Set(ids.slice(-50));
     }
+    if (this._resolvedRequestIds.size > 100) {
+      const ids = Array.from(this._resolvedRequestIds);
+      this._resolvedRequestIds = new Set(ids.slice(-50));
+    }
 
-    if (!this._currentRequest || request.id !== this._currentRequest.id) {
-      this._currentRequest = request;
-      this._activePort = port;
-      this._currentRequestPort = port;
-      
-      // 「插件通知」主开关（配置 key 历史原因仍叫 systemNotification）：关掉后本窗口完全静默——
-      // 不推送内容、不弹面板、不抢焦点、不发系统通知；连用户之后主动切回 / 打开面板也不显示
-      // （见 resolveWebviewView 里 ready 与 onDidChangeVisibility 的同款判断）。
-      // 请求仍记录在 _currentRequest，仅用于去重与外部渠道（飞书 / 超时）resolve 关联。
-      if (!this._isPluginNotifyEnabled()) {
-        return;
-      }
+    this._currentRequest = request;
+    this._activePort = port;
+    this._currentRequestPort = port;
 
-      // 开启：推送内容并显示面板
-      this._showFeedbackRequest(request);
-      
-      // 只对新鲜请求做主动提醒（聚焦面板 + IDE 提示 + 失焦系统通知）
-      if (isFreshRequest) {
-        vscode.commands.executeCommand('cursorFeedback.feedbackView.focus');
-        this._sendSystemNotification(request);
-      }
+    // 「插件通知」主开关（配置 key 历史原因仍叫 systemNotification）：关掉后本窗口完全静默——
+    // 不推送内容、不弹面板、不抢焦点、不发系统通知；连用户之后主动切回 / 打开面板也不显示
+    // （见 resolveWebviewView 里 ready 与 onDidChangeVisibility 的同款判断）。
+    // 请求仍记录在 _currentRequest，仅用于去重与外部渠道（飞书 / 超时）resolve 关联。
+    if (!this._isPluginNotifyEnabled()) {
+      return;
+    }
+
+    // 推送内容并显示面板
+    this._showFeedbackRequest(request);
+
+    // 只对「新鲜且首次见到」的请求做主动提醒（聚焦面板 + IDE 提示 + 失焦系统通知）
+    if (isFreshRequest && !alreadySeen) {
+      vscode.commands.executeCommand('cursorFeedback.feedbackView.focus');
+      this._sendSystemNotification(request);
     }
   }
 
@@ -764,6 +781,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   private _handleExternalResolve() {
     if (!this._currentRequest) return;
     this._seenRequestIds.add(this._currentRequest.id);
+    this._resolvedRequestIds.add(this._currentRequest.id);
     this._currentRequest = null;
     this._currentRequestPort = null;
     this._showWaitingState();
@@ -812,6 +830,8 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
 
       const result = JSON.parse(response);
       if (result.success) {
+        // 记入「已提交」：该请求此后绝不复显（server 端清理有滞后，轮询可能还会拿到它）
+        this._resolvedRequestIds.add(payload.requestId);
         this._currentRequest = null;
         this._currentRequestPort = null;
         this._showWaitingState();
@@ -1017,6 +1037,13 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         this._view?.webview.postMessage({
           type: 'pauseState',
           payload: { requestId, paused: result.paused, remainingMs: result.remainingMs }
+        });
+      } else {
+        // 请求已在 server 端结束（超时/被回复）→ 明确提示，不能静默：
+        // 用户以为暂停成功离开，实际倒计时早没了，回来发现等待消失会一头雾水
+        this._view?.webview.postMessage({
+          type: 'toast',
+          payload: { text: this._i18n.pauseFailedEnded }
         });
       }
     } catch {

@@ -107,6 +107,13 @@ class McpFeedbackServer {
     deadline: number;
     paused: boolean;
     remainingMs: number;
+    // 全量请求对象：/api/feedback/current 按窗口（workspace）挑请求返回给插件展示用
+    request: FeedbackRequest;
+    // 等待本请求结果的所有 MCP 调用（首个调用 + 被判定为重复投递而 join 进来的调用）。
+    // 背景：Cursor 客户端/传输层偶发对同一次 tool call 重复投递（实测同 summary 间隔 1 分钟
+    // 连发两次），旧实现把第二次当「新请求」→ cancelStalePending 顶掉第一次 → AI 收到
+    // SUPERSEDED 提前收尾。现在重复投递直接共享同一个等待，结果对所有 waiter 广播。
+    waiters: Array<(outcome: WaitOutcome) => void>;
   }> = new Map();
 
   // 当前反馈请求
@@ -338,6 +345,16 @@ class McpFeedbackServer {
 
     const requestId = this.generateRequestId();
 
+    // 重复投递识别：同窗口 + 同 summary + 旧请求还很新 → 视为客户端/传输层对同一次调用的
+    // 重复投递（非新一轮），直接 join 旧等待共享结果：不发新卡、不顶旧请求（顶了会让
+    // 先到的那次调用收到 SUPERSEDED、AI 误以为被新会话取代而提前收尾）。
+    const dup = this.findDuplicatePending(projectDir, summary);
+    if (dup) {
+      debugLog(`Duplicate delivery detected for request ${dup.id}; joining its wait instead of superseding`);
+      const outcome = await new Promise<WaitOutcome>((res) => dup.waiters.push(res));
+      return this.outcomeToResult(outcome, dup.id);
+    }
+
     // 作废上一轮残留的「僵尸」请求：单实例单窗口同时只应有一个活跃反馈请求。
     // 旧请求多半是对话被压缩 / 客户端取消后还卡在 await 的残留（要等 timeout 才自然结束），
     // 不清理会让 pendingCount 虚高、全局视角误判「多个窗口在等」
@@ -359,13 +376,14 @@ class McpFeedbackServer {
     }
     
     // 创建反馈请求
-    this.currentRequest = {
+    const request: FeedbackRequest = {
       id: requestId,
       summary,
       projectDir,
       timeout,
       timestamp: Date.now(),
     };
+    this.currentRequest = request;
 
     debugLog(`Feedback request created: ${requestId}`);
     debugLog(`Summary: ${summary}`);
@@ -380,91 +398,8 @@ class McpFeedbackServer {
 
     try {
       // 等待用户反馈
-      const outcome = await this.waitForFeedback(requestId, timeout * 1000, projectDir);
-
-      // 被同窗口/同进程的新一轮请求取代：安静结束，绝不能重试（否则多 agent 互相取消、忙等刷屏）。
-      if (outcome.kind === 'superseded') {
-        debugLog(`Request ${requestId} superseded by a newer request; ending this turn quietly`);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: '[SUPERSEDED] This feedback request was replaced by a newer interactive_feedback call (the same workspace started a new round, or another agent shares this MCP process). Do NOT call interactive_feedback again for this turn — just end your turn quietly. 【本反馈请求已被同窗口/同进程的新请求取代：不要再次调用 interactive_feedback，安静结束本轮，切勿重试。】',
-            },
-          ],
-        };
-      }
-
-      if (outcome.kind === 'timeout') {
-        debugLog('Feedback wait window elapsed without user input');
-        // 超时续期开关：MCP_AUTO_RETRY=false 时关闭（超时即结束），默认开启（超时返回续期提醒）。
-        // 关键：这里【绝不能】说成 "cancelled"——那会让 AI 误以为用户主动取消而结束对话，
-        // 这正是“超时后 AI 直接收尾、不再续命”的根因。改为明确区分“超时 ≠ 取消”。
-        const autoRetry = this.effectiveAutoRetry();
-        const timeoutMessage = autoRetry
-          ? '[TIMEOUT_KEEP_WAITING] No feedback was submitted within the wait window. This is a TIMEOUT, NOT a cancellation — the user is most likely still away from the keyboard. You MUST immediately call the interactive_feedback tool again with the same project_directory to keep waiting. Do NOT end the conversation, do NOT summarize the task as finished. Only stop calling it when the user EXPLICITLY tells you to stop. 【这是超时续期，并非用户取消：请立即用相同 project_directory 再次调用 interactive_feedback 继续等待，不要结束对话、不要当作任务完成。】'
-          : '[TIMEOUT_END] No feedback was submitted within the wait window and timeout auto-continue is disabled (MCP_AUTO_RETRY=false). You may end this turn now. 【超时未收到反馈，且已关闭超时续期（MCP_AUTO_RETRY=false），可以结束本轮。】';
-        return {
-          content: [
-            {
-              type: 'text',
-              text: timeoutMessage,
-            },
-          ],
-        };
-      }
-
-      const result = outcome.data;
-
-      debugLog(`Received feedback: ${result.interactive_feedback?.substring(0, 100)}...`);
-
-      const contentItems: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [];
-
-      // 构建反馈文本
-      let feedbackText = '';
-      
-      // 添加文字反馈
-      if (result.interactive_feedback) {
-        feedbackText += `=== User Feedback ===\n${result.interactive_feedback}`;
-      }
-
-      // 添加附加文件路径
-      if (result.attachedFiles && result.attachedFiles.length > 0) {
-        debugLog(`Processing ${result.attachedFiles.length} attached files`);
-        feedbackText += `\n\n=== Attached Files ===\n`;
-        for (const filePath of result.attachedFiles) {
-          feedbackText += `${filePath}\n`;
-        }
-        feedbackText += `\nPlease read the above files to understand the context.`;
-      }
-
-      if (feedbackText) {
-        contentItems.push({
-          type: 'text',
-          text: feedbackText,
-        });
-      }
-
-      // 添加图片
-      if (result.images && result.images.length > 0) {
-        debugLog(`Processing ${result.images.length} images`);
-        for (const img of result.images) {
-          contentItems.push({
-            type: 'image',
-            data: img.data,
-            mimeType: this.getMimeType(img.name),
-          });
-        }
-      }
-
-      if (contentItems.length === 0) {
-        contentItems.push({
-          type: 'text',
-          text: 'User did not provide any feedback.',
-        });
-      }
-
-      return { content: contentItems };
+      const outcome = await this.waitForFeedback(request, timeout * 1000);
+      return this.outcomeToResult(outcome, requestId);
     } catch (error) {
       debugLog(`Error collecting feedback: ${error}`);
       return {
@@ -552,11 +487,16 @@ class McpFeedbackServer {
           if (target) this.forwardOrphan(target.port, text, chatId, images, files, messageId);
         }
       } else {
-        // 多个窗口在等 → 不猜。项目名可能重复（同一项目开多窗口），逐项列出也无法区分，
-        // 故不逐项列，直接引导用户去点想回复的那张卡片——回复哪张就精确回到哪个窗口。
+        // 多个等待并存 → 不猜。注意措辞：多个等待可能来自同一窗口的多个对话（用户实测
+        // 「只开了一个窗口却提示多窗口」造成困惑），按「反馈请求」计数并列出项目名，
+        // 引导用户去点想回复的那张卡片——回复哪张就精确回到哪个请求。
+        const names = [
+          ...localPending.map((p) => this.projectName(p.projectDir)),
+          ...remote.flatMap((r) => r.list.map((x) => x.projectName)),
+        ];
         this.feishu.replyText(
           chatId,
-          `当前有 ${globalCount} 个窗口在等反馈，没法自动判断你要回复哪个。\n请直接在你想回复的那张卡片上点「回复」再发，回复哪张就回到哪个窗口。`,
+          `当前有 ${globalCount} 个反馈请求在等待（${names.join('、')}），可能来自不同窗口或同一窗口的多个对话，没法自动判断你要回复哪个。\n请在你想回复的那张卡片上点「回复」再发，回复哪张就送达哪个请求。`,
         );
       }
     });
@@ -745,6 +685,10 @@ class McpFeedbackServer {
     const owner = this.normalizePath(projectDir);
     for (const [reqId, pending] of this.pendingRequests) {
       if (this.normalizePath(pending.projectDir) !== owner) continue;
+      // 用户显式暂停的等待不作废：暂停 = 用户明确表达「保住这轮、等我回来」，
+      // 不是僵尸残留。同窗口新旧请求并存时，/api/feedback/current 按「未暂停优先」
+      // 返回，active 的结束后暂停中的会重新回到面板，可恢复可提交。
+      if (pending.paused) continue;
       clearTimeout(pending.timeout);
       pending.resolve(null); // → superseded：旧 await 安静结束，不触发重试
       this.feishu.clearPending(reqId);
@@ -753,10 +697,131 @@ class McpFeedbackServer {
   }
 
   /**
-   * 等待用户反馈
+   * 查找可 join 的「重复投递」等待：同窗口 + 同 summary + 注册时间在 DUP_JOIN_MS 内。
+   * AI 每一轮的 summary 几乎不可能与上一轮一字不差，短窗口内完全相同基本可断定为
+   * 客户端/传输层对同一次 tool call 的重复投递。
    */
-  private waitForFeedback(requestId: string, timeoutMs: number, projectDir: string): Promise<WaitOutcome> {
+  private static readonly DUP_JOIN_MS = 90_000;
+  private findDuplicatePending(
+    projectDir: string,
+    summary: string,
+  ): { id: string; waiters: Array<(outcome: WaitOutcome) => void> } | null {
+    const owner = this.normalizePath(projectDir);
+    for (const [id, pending] of this.pendingRequests) {
+      if (this.normalizePath(pending.projectDir) !== owner) continue;
+      if (pending.request.summary !== summary) continue;
+      if (Date.now() - pending.request.timestamp > McpFeedbackServer.DUP_JOIN_MS) continue;
+      return { id, waiters: pending.waiters };
+    }
+    return null;
+  }
+
+  /**
+   * 把等待结果翻译成 MCP 工具响应（主等待与重复投递 join 的等待共用同一段收尾语义）。
+   */
+  private outcomeToResult(outcome: WaitOutcome, requestId: string): {
+    content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+    isError?: boolean;
+  } {
+    // 被同窗口/同进程的新一轮请求取代：安静结束，绝不能重试（否则多 agent 互相取消、忙等刷屏）。
+    if (outcome.kind === 'superseded') {
+      debugLog(`Request ${requestId} superseded by a newer request; ending this turn quietly`);
+      return {
+        content: [
+          {
+            type: 'text',
+            text: '[SUPERSEDED] This feedback request was replaced by a newer interactive_feedback call (the same workspace started a new round, or another agent shares this MCP process). Do NOT call interactive_feedback again for this turn — just end your turn quietly. 【本反馈请求已被同窗口/同进程的新请求取代：不要再次调用 interactive_feedback，安静结束本轮，切勿重试。】',
+          },
+        ],
+      };
+    }
+
+    if (outcome.kind === 'timeout') {
+      debugLog('Feedback wait window elapsed without user input');
+      // 超时续期开关：MCP_AUTO_RETRY=false 时关闭（超时即结束），默认开启（超时返回续期提醒）。
+      // 关键：这里【绝不能】说成 "cancelled"——那会让 AI 误以为用户主动取消而结束对话，
+      // 这正是“超时后 AI 直接收尾、不再续命”的根因。改为明确区分“超时 ≠ 取消”。
+      const autoRetry = this.effectiveAutoRetry();
+      const timeoutMessage = autoRetry
+        ? '[TIMEOUT_KEEP_WAITING] No feedback was submitted within the wait window. This is a TIMEOUT, NOT a cancellation — the user is most likely still away from the keyboard. You MUST immediately call the interactive_feedback tool again with the same project_directory to keep waiting. Do NOT end the conversation, do NOT summarize the task as finished. Only stop calling it when the user EXPLICITLY tells you to stop. 【这是超时续期，并非用户取消：请立即用相同 project_directory 再次调用 interactive_feedback 继续等待，不要结束对话、不要当作任务完成。】'
+        : '[TIMEOUT_END] No feedback was submitted within the wait window and timeout auto-continue is disabled (MCP_AUTO_RETRY=false). You may end this turn now. 【超时未收到反馈，且已关闭超时续期（MCP_AUTO_RETRY=false），可以结束本轮。】';
+      return {
+        content: [
+          {
+            type: 'text',
+            text: timeoutMessage,
+          },
+        ],
+      };
+    }
+
+    const result = outcome.data;
+
+    debugLog(`Received feedback: ${result.interactive_feedback?.substring(0, 100)}...`);
+
+    const contentItems: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [];
+
+    // 构建反馈文本
+    let feedbackText = '';
+
+    // 添加文字反馈
+    if (result.interactive_feedback) {
+      feedbackText += `=== User Feedback ===\n${result.interactive_feedback}`;
+    }
+
+    // 添加附加文件路径
+    if (result.attachedFiles && result.attachedFiles.length > 0) {
+      debugLog(`Processing ${result.attachedFiles.length} attached files`);
+      feedbackText += `\n\n=== Attached Files ===\n`;
+      for (const filePath of result.attachedFiles) {
+        feedbackText += `${filePath}\n`;
+      }
+      feedbackText += `\nPlease read the above files to understand the context.`;
+    }
+
+    if (feedbackText) {
+      contentItems.push({
+        type: 'text',
+        text: feedbackText,
+      });
+    }
+
+    // 添加图片
+    if (result.images && result.images.length > 0) {
+      debugLog(`Processing ${result.images.length} images`);
+      for (const img of result.images) {
+        contentItems.push({
+          type: 'image',
+          data: img.data,
+          mimeType: this.getMimeType(img.name),
+        });
+      }
+    }
+
+    if (contentItems.length === 0) {
+      contentItems.push({
+        type: 'text',
+        text: 'User did not provide any feedback.',
+      });
+    }
+
+    return { content: contentItems };
+  }
+
+  /**
+   * 等待用户反馈：注册 pending 并挂起，结果通过 waiters 广播——
+   * 首个调用与后续 join 进来的重复投递调用都会收到同一份结果。
+   */
+  private waitForFeedback(request: FeedbackRequest, timeoutMs: number): Promise<WaitOutcome> {
     return new Promise<WaitOutcome>((resolve) => {
+      const requestId = request.id;
+      const projectDir = request.projectDir;
+      const waiters: Array<(outcome: WaitOutcome) => void> = [resolve];
+      // 广播给所有 waiter（splice 清空防重复触发：timeout 与 resolve 竞态时只结算一次）
+      const settle = (outcome: WaitOutcome) => {
+        for (const w of waiters.splice(0)) w(outcome);
+      };
+
       const onTimeout = () => {
         debugLog(`Request ${requestId} timed out`);
         this.pendingRequests.delete(requestId);
@@ -766,7 +831,7 @@ class McpFeedbackServer {
           if (Date.now() - v.at > McpFeedbackServer.REJOIN_TTL_MS * 4) this.recentlyTimedOut.delete(id);
         }
         // 飞书侧的清理统一交给 handleInteractiveFeedback 的 finally（clearPending），这里不再重复。
-        resolve({ kind: 'timeout' });
+        settle({ kind: 'timeout' });
       };
       const timeout = setTimeout(onTimeout, timeoutMs);
 
@@ -774,15 +839,17 @@ class McpFeedbackServer {
         // resolve 包一层：沿用「外部 resolve(feedback) / resolve(null)」旧约定，
         // 但 null 一律映射为 superseded（被同进程新请求取代），绝不再走「超时重试」路径。
         resolve: (value: FeedbackResponse | null) => {
-          resolve(value === null ? { kind: 'superseded' } : { kind: 'feedback', data: value });
+          settle(value === null ? { kind: 'superseded' } : { kind: 'feedback', data: value });
         },
-        reject: () => resolve({ kind: 'superseded' }),
+        reject: () => settle({ kind: 'superseded' }),
         timeout,
         projectDir,
         onTimeout,
         deadline: Date.now() + timeoutMs,
         paused: false,
         remainingMs: timeoutMs,
+        request,
+        waiters,
       });
 
       // 抢跑兑现：空窗期的面板提交（优先，用户显式点了发送）与飞书暂存消息，
@@ -818,17 +885,42 @@ class McpFeedbackServer {
     };
   }
 
-  /** 当前请求的暂停态快照（随 /api/feedback/current 下发，供面板重建后恢复显示） */
-  private getPauseState(): { requestId: string; paused: boolean; remainingMs: number } | null {
-    const cur = this.currentRequest;
-    if (!cur) return null;
-    const p = this.pendingRequests.get(cur.id);
+  /** 指定请求的暂停态快照（随 /api/feedback/current 下发，供面板重建后恢复显示） */
+  private getPauseStateFor(
+    requestId: string | undefined,
+  ): { requestId: string; paused: boolean; remainingMs: number } | null {
+    if (!requestId) return null;
+    const p = this.pendingRequests.get(requestId);
     if (!p) return null;
     return {
-      requestId: cur.id,
+      requestId,
       paused: p.paused,
       remainingMs: p.paused ? p.remainingMs : Math.max(0, p.deadline - Date.now()),
     };
+  }
+
+  /**
+   * 按窗口（workspace）从 pendingRequests 挑该窗口该看到的请求。
+   * 修复「多窗口共用一个 MCP 进程时 currentRequest 单值槽互相覆盖、被覆盖的窗口面板
+   * 显示不出自己的等待（只有飞书收到）」：每个窗口轮询时按自己的路径取自己的请求。
+   * 多个匹配时：未暂停的优先（active 请求先服务）；同暂停态取最新——active 的结束后
+   * 暂停中的会自然回到面板，用户可恢复。
+   */
+  private pickRequestForWorkspace(normalizedWs: string): FeedbackRequest | null {
+    let best: { request: FeedbackRequest; paused: boolean } | null = null;
+    for (const [, p] of this.pendingRequests) {
+      if (!this.pathsRelated(this.normalizePath(p.projectDir), normalizedWs)) continue;
+      if (!best) {
+        best = p;
+        continue;
+      }
+      if (best.paused !== p.paused) {
+        if (best.paused) best = p;
+        continue;
+      }
+      if (p.request.timestamp > best.request.timestamp) best = p;
+    }
+    return best ? best.request : null;
   }
 
   /**
@@ -1125,6 +1217,7 @@ class McpFeedbackServer {
           if (req.method === 'GET' && req.url?.startsWith('/api/feedback/current')) {
           // autoRetry 不再从轮询 query 同步（曾致多窗口互相覆盖、抖动）：
           // 改由 POST /api/settings/autoRetry 广播 + 磁盘真相源，poll 只回读做 UI 回显。
+          let pollWs = '';
           try {
             const u = new URL(req.url, 'http://127.0.0.1');
             // 「我的窗口」心跳：仅当轮询带的 workspace 匹配本实例归属时刷新。
@@ -1133,6 +1226,7 @@ class McpFeedbackServer {
             // 匹配放宽为「路径互为前缀」：AI 传的 project_directory 可能是窗口工作区的子目录。
             // 命中即确认 owner 身份（ownerConfirmed），此后 owner 不再被后续调用改写。
             const ws = this.normalizePath(u.searchParams.get('workspace') || '');
+            pollWs = ws;
             if (ws && this.ownerWorkspace && this.pathsRelated(ws, this.ownerWorkspace)) {
               this.lastOwnerPollTime = Date.now();
               this.everOwnerPolled = true;
@@ -1141,16 +1235,19 @@ class McpFeedbackServer {
           } catch {
             // 忽略解析错误
           }
+          // 按窗口挑请求：多窗口/多对话共用本进程时各窗口各看各的等待，互不覆盖。
+          // 不带 workspace（无工作区窗口 / 旧版插件）时回退全局 currentRequest 老行为。
+          const chosen = pollWs ? this.pickRequestForWorkspace(pollWs) : (this.currentRequest || null);
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          // 返回当前请求、ownerWorkspace、startTime，以及当前生效的 autoRetry（供 UI 初始同步）
+          // 返回该窗口的请求、ownerWorkspace、startTime，以及当前生效的 autoRetry（供 UI 初始同步）
           res.end(JSON.stringify({
-            request: this.currentRequest || null,
+            request: chosen,
             ownerWorkspace: this.ownerWorkspace,
             startTime: this.startTime,
             autoRetry: this.autoRetryOverride !== null ? this.autoRetryOverride : (process.env.MCP_AUTO_RETRY !== 'false'),
             feishu: this.feishu.getStatus(),
             feishuResolvedId: (this.lastFeishuResolved && Date.now() - this.lastFeishuResolved.at < 30000) ? this.lastFeishuResolved.id : null,
-            pause: this.getPauseState(),
+            pause: this.getPauseStateFor(chosen?.id),
           }));
           return;
         }

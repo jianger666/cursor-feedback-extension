@@ -1263,6 +1263,11 @@
           ? (i18n.toastQueued || 'Queued — will be delivered to AI next round')
           : (i18n.toastSubmitted || 'Feedback sent'));
         break;
+
+      case 'toast':
+        // extension 侧的通用轻提示（如暂停失败：请求已结束）
+        if (message.payload && message.payload.text) showToast(message.payload.text);
+        break;
     }
   });
 

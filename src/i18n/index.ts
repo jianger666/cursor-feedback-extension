@@ -93,6 +93,7 @@ export type I18nMessages = {
   notifyTestBody: string;
   toastSubmitted: string;
   toastQueued: string;
+  pauseFailedEnded: string;
   historyBtn: string;
   historyEmpty: string;
 };
@@ -245,6 +246,7 @@ function getDefaultMessages(): I18nMessages {
     notifyTestBody: "This is a test notification · click to open Cursor",
     toastSubmitted: "✓ Feedback sent",
     toastQueued: "✓ Queued — AI will receive it next round",
+    pauseFailedEnded: "Pause failed: this request has already ended (timed out or answered)",
     historyBtn: "Feedback history",
     historyEmpty: "No history yet — submitted feedback will show up here"
   };
