@@ -98,8 +98,10 @@
   const systemNotifyToggle = document.getElementById('systemNotifyToggle');
   const osNotifyToggle = document.getElementById('osNotifyToggle');
   const feishuAckToggle = document.getElementById('feishuAckToggle');
+  const feishuQueueToggle = document.getElementById('feishuQueueToggle');
   const osNotifySub = document.getElementById('osNotifySub');
   const feishuAckSub = document.getElementById('feishuAckSub');
+  const feishuQueueSub = document.getElementById('feishuQueueSub');
   const notifyTestBtn = document.getElementById('notifyTestBtn');
   const notifyTestHint = document.getElementById('notifyTestHint');
   const historyBtn = document.getElementById('historyBtn');
@@ -239,6 +241,9 @@
   feishuAckToggle.addEventListener('change', () => {
     vscode.postMessage({ type: 'toggleFeishuAck', payload: { enabled: feishuAckToggle.checked } });
   });
+  feishuQueueToggle.addEventListener('change', () => {
+    vscode.postMessage({ type: 'toggleFeishuQueue', payload: { enabled: feishuQueueToggle.checked } });
+  });
 
   // 发送测试通知：一键验证系统通知链路通不通（权限被拒时收不到，配合上方排查提示定位）
   let notifyTestHintTimer = null;
@@ -257,6 +262,8 @@
     const feishuOn = feishuEnabledToggle.checked;
     feishuAckToggle.disabled = !feishuOn;
     if (feishuAckSub) feishuAckSub.classList.toggle('is-disabled', !feishuOn);
+    feishuQueueToggle.disabled = !feishuOn;
+    if (feishuQueueSub) feishuQueueSub.classList.toggle('is-disabled', !feishuOn);
   }
 
   function updateFeishuUI(state) {
@@ -275,6 +282,9 @@
     }
     if (typeof state.feishuAck === 'boolean') {
       feishuAckToggle.checked = state.feishuAck;
+    }
+    if (typeof state.feishuQueue === 'boolean') {
+      feishuQueueToggle.checked = state.feishuQueue;
     }
     syncSubSwitchDisabled();
     feishuStatusEl.classList.toggle('is-configured', !!state.configured && !state.bound);

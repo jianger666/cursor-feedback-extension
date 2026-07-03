@@ -231,6 +231,7 @@ npm install -g cursor-feedback
 | `FEISHU_APP_SECRET` | - | 飞书应用 App Secret |
 | `FEISHU_ENABLED` | `true` | 是否推送反馈到飞书，设 `false` 关闭 |
 | `FEISHU_ACK` | `true` | 收到你的回复后是否回「Get」表情回执，设 `false` 关闭 |
+| `FEISHU_QUEUE` | `true` | 忙时消息排队：AI 正忙（没有等待中的反馈）时你发的消息先排队，等 AI 下一轮询问时自动送达并附「任务期间追加」提示；排队时机器人会回执「已排队，任务完成后自动读取」。设 `false` 关闭（也可在面板「通知设置」里切换） |
 
 > 优先级：**插件面板（填了凭证）> 这里的 env > 默认**。面板里填了 App ID/Secret 就以面板为准；没填则回退到 env。首次仍需在飞书里给机器人发一条消息完成绑定。
 

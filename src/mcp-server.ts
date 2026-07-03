@@ -153,6 +153,27 @@ class McpFeedbackServer {
   private recentlyTimedOut = new Map<string, { projectDir: string; at: number }>();
   /** 面板在超时空窗内提交的反馈：暂存到下一轮 pending 注册时立即兑现 */
   private panelStash: { feedback: FeedbackResponse; projectDir: string; at: number } | null = null;
+  /**
+   * 忙时消息队列：AI 正在干活（该项目空间没有等待中的反馈请求）时用户发来的飞书消息
+   * 不再丢弃，而是按项目空间排队；等 AI 下一轮调 interactive_feedback 时合并送达，
+   * 并附「任务期间追加」提示头。开关见 FeishuBridge.queueWhenBusy（面板 / FEISHU_QUEUE）。
+   */
+  private queuedInbound: Array<{
+    text: string;
+    chatId: string;
+    images: FeedbackResponse['images'];
+    files: string[];
+    at: number;
+    messageId: string;
+    /** 归属项目空间：只被该项目的下一轮反馈请求消费 */
+    forProjectDir: string;
+    /** 过期定时器：到点仍未被读取则回执用户「未送达」并出队 */
+    expiryTimer: ReturnType<typeof setTimeout>;
+  }> = [];
+  /** 队列消息未被读取的兜底时长：超过视为对话已结束，回执用户避免静默丢失 */
+  private static readonly QUEUE_TTL_MS = 60 * 60 * 1000;
+  /** 队列长度上限：极端情况下防止无限堆积 */
+  private static readonly QUEUE_MAX = 100;
   /** 暂存过期提示定时器：到点仍未被认领则「回复」那条消息告知没送到，避免静默丢弃 */
   private stashExpiryTimer: ReturnType<typeof setTimeout> | null = null;
   /**
@@ -391,8 +412,10 @@ class McpFeedbackServer {
     debugLog(`Timeout: ${timeout}s`);
     debugLog(`Waiting for VS Code extension to collect feedback...`);
 
-    // 飞书：已配置则推送一张反馈请求卡片（失败不影响插件主流程）
-    if (this.feishu.isConfigured()) {
+    // 飞书：已配置则推送一张反馈请求卡片（失败不影响插件主流程）。
+    // 例外：忙时队列里已有本项目的排队消息 → 本轮会在注册后立即被队列兑现，
+    // 卡片发出去马上就过期（用户回复只会得到「已结束」），干脆不发。
+    if (this.feishu.isConfigured() && !this.hasQueuedFor(projectDir)) {
       this.feishu.sendFeedbackCard(requestId, summary, projectDir).catch(() => {});
     }
 
@@ -444,6 +467,8 @@ class McpFeedbackServer {
             this.submitFromFeishu(reqId, text, chatId, images, files, messageId);
           } else if (this.maybeStashForEndedCard(reqId, text, chatId, images, files, messageId)) {
             // 卡片刚超时、AI 正要续期重调 → 暂存续接到下一轮（超时未认领由 armStashExpiryNotice 回执）
+          } else if (this.queueForEndedCard(reqId, text, chatId, images, files, messageId)) {
+            // 忙时排队：AI 正忙（该项目无等待中的请求）→ 消息入队，等下一轮 feedback 自动送达
           } else {
             // 卡片是本实例发的，但请求确实已结束（已被回复 / 超时太久）→ 明确告知
             this.feishu.replyText(chatId, '这条反馈已经结束了（可能已超时或已被回复）。');
@@ -471,8 +496,15 @@ class McpFeedbackServer {
       const globalCount = localPending.length + remoteCount;
 
       if (globalCount === 0) {
-        // 抢跑兜底：此刻全局无人等待，但很可能 AI 正要发起下一轮（卡片还没注册）。
-        // 暂存到收到消息的本实例，等下一轮 pending 注册时立即兑现。
+        // 忙时排队优先：全局无人等待 = AI 大概率正在干活。定位到唯一的活跃项目窗口时
+        // 直接把消息排队给它（含回执「已排队」），多个活跃窗口则引导用户回复对应卡片。
+        // 复用上面 queryRemotePending 的扫描结果，避免二次全端口扫描。
+        if (this.feishu.isQueueWhenBusy()) {
+          const routed = await this.routeOrphanToQueue(text, chatId, images, files, messageId, remote);
+          if (routed) return;
+        }
+        // 抢跑兜底：定位不到活跃窗口（或队列关闭）时，退回原有短暂存——很可能 AI 正要
+        // 发起下一轮（卡片还没注册），等 pending 注册时立即兑现。
         // 关键：此刻没有任何 AI 在等待，绝不能给「✅ 已收到」回执——那是虚假承诺，会让用户
         // 误以为消息已被接收（实则 AI 这轮可能已结束、永远不会来认领，消息石沉大海）。
         // 回执只在「真正送达某个等待中的请求」时给（见 tryConsumeStash → submitFromFeishu）。
@@ -612,10 +644,13 @@ class McpFeedbackServer {
   }
 
   /**
-   * 向其他窗口的 server 查询各自的 pending 列表（仅项目名，用于全局视角判断 + 提示文案）。
+   * 向其他窗口的 server 查询各自的 pending 列表（仅项目名，用于全局视角判断 + 提示文案），
+   * 以及实例归属窗口的存活状态（忙时排队用来定位「唯一活跃窗口」）。
    * 用于无 parent_id 的「无主消息」：飞书只推给一个窗口，需汇总全局才能正确决策。
    */
-  private queryRemotePending(): Promise<Array<{ port: number; list: Array<{ projectName: string }> }>> {
+  private queryRemotePending(): Promise<
+    Array<{ port: number; list: Array<{ projectName: string }>; ownerWorkspace: string | null; ownerAlive: boolean }>
+  > {
     const ports: number[] = [];
     for (let p = this.basePort; p < this.basePort + McpFeedbackServer.PORT_SCAN_RANGE; p++) {
       if (p !== this.port) ports.push(p);
@@ -623,8 +658,11 @@ class McpFeedbackServer {
     return Promise.all(ports.map((port) => this.fetchRemotePending(port)));
   }
 
-  private fetchRemotePending(port: number): Promise<{ port: number; list: Array<{ projectName: string }> }> {
+  private fetchRemotePending(
+    port: number,
+  ): Promise<{ port: number; list: Array<{ projectName: string }>; ownerWorkspace: string | null; ownerAlive: boolean }> {
     return new Promise((resolve) => {
+      const empty = { port, list: [], ownerWorkspace: null, ownerAlive: false };
       const req = http.request(
         { hostname: '127.0.0.1', port, path: '/api/feishu/pending', method: 'GET', timeout: 1500 },
         (res) => {
@@ -632,16 +670,25 @@ class McpFeedbackServer {
           res.on('data', (chunk) => { body += chunk.toString(); });
           res.on('end', () => {
             try {
-              const j = JSON.parse(body) as { list?: Array<{ projectName: string }> };
-              resolve({ port, list: Array.isArray(j.list) ? j.list : [] });
+              const j = JSON.parse(body) as {
+                list?: Array<{ projectName: string }>;
+                ownerWorkspace?: string | null;
+                ownerAlive?: boolean;
+              };
+              resolve({
+                port,
+                list: Array.isArray(j.list) ? j.list : [],
+                ownerWorkspace: j.ownerWorkspace || null,
+                ownerAlive: !!j.ownerAlive,
+              });
             } catch {
-              resolve({ port, list: [] });
+              resolve(empty);
             }
           });
         },
       );
-      req.on('error', () => resolve({ port, list: [] }));
-      req.on('timeout', () => { req.destroy(); resolve({ port, list: [] }); });
+      req.on('error', () => resolve(empty));
+      req.on('timeout', () => { req.destroy(); resolve(empty); });
       req.end();
     });
   }
@@ -853,9 +900,10 @@ class McpFeedbackServer {
       });
 
       // 抢跑兑现：空窗期的面板提交（优先，用户显式点了发送）与飞书暂存消息，
-      // 本轮 pending 一注册立即作为回复提交
+      // 本轮 pending 一注册立即作为回复提交；最后是忙时队列里排队的追加消息
       this.tryConsumePanelStash(requestId);
       this.tryConsumeStash(requestId);
+      this.tryConsumeQueue(requestId);
     });
   }
 
@@ -1059,6 +1107,259 @@ class McpFeedbackServer {
     pending.resolve(stash.feedback);
     this.pendingRequests.delete(requestId);
     this.feishu.clearPending(requestId);
+  }
+
+  // ==================== 忙时消息队列 ====================
+
+  /** 某项目空间当前是否有等待中的反馈请求（路径互为前缀视为同一窗口语境） */
+  private hasPendingForProject(projectDir: string): boolean {
+    const owner = this.normalizePath(projectDir);
+    for (const [, p] of this.pendingRequests) {
+      if (this.pathsRelated(this.normalizePath(p.projectDir), owner)) return true;
+    }
+    return false;
+  }
+
+  /** 队列里是否有属于某项目空间的排队消息 */
+  private hasQueuedFor(projectDir: string): boolean {
+    if (!this.feishu.isQueueWhenBusy()) return false;
+    const owner = this.normalizePath(projectDir);
+    return this.queuedInbound.some((q) =>
+      this.pathsRelated(this.normalizePath(q.forProjectDir), owner),
+    );
+  }
+
+  /**
+   * 用户回复了一张「已结束」的卡片（不在超时续接窗口内）→ 忙时排队：
+   * - 该项目已有新一轮在等 → 引导回复最新卡片（避免旧回复窜入错误轮次），视为已处理；
+   * - 该项目没有等待中的请求（AI 正忙）→ 入队，等下一轮 feedback 自动送达。
+   * 返回 true 表示已处理（排队或已引导），false 表示队列关闭 / 定位不到归属，走原有「已结束」回执。
+   */
+  private queueForEndedCard(
+    reqId: string,
+    text: string,
+    chatId: string,
+    images: FeedbackResponse['images'],
+    files: string[],
+    messageId: string,
+  ): boolean {
+    if (!this.feishu.isQueueWhenBusy()) return false;
+    const cardProject = this.feishu.projectDirOf(reqId);
+    if (!cardProject) return false;
+    if (this.hasPendingForProject(cardProject)) {
+      this.feishu.replyToMessage(
+        messageId || undefined,
+        chatId,
+        '这张卡片的反馈已结束，且该项目有新的反馈卡片正在等待。请「回复」最新的那张卡片。',
+      );
+      return true;
+    }
+    this.enqueueInbound(text, chatId, images, files, messageId, cardProject);
+    return true;
+  }
+
+  /**
+   * 消息入队 + 回执用户「已排队」。每条消息带 60 分钟过期兜底：
+   * 到点仍未被 AI 读取（对话可能已结束）→ 引用回复告知未送达，绝不静默丢弃。
+   */
+  private enqueueInbound(
+    text: string,
+    chatId: string,
+    images: FeedbackResponse['images'],
+    files: string[],
+    messageId: string,
+    forProjectDir: string,
+  ): void {
+    // 上限保护：挤出最老的一条并告知未送达
+    while (this.queuedInbound.length >= McpFeedbackServer.QUEUE_MAX) {
+      const dropped = this.queuedInbound.shift();
+      if (!dropped) break;
+      clearTimeout(dropped.expiryTimer);
+      this.feishu.replyToMessage(
+        dropped.messageId || undefined,
+        dropped.chatId,
+        '⚠️ 排队消息过多，这条消息已被挤出队列、未送达 AI，请稍后重发。',
+      );
+    }
+    const item = {
+      text,
+      chatId,
+      images,
+      files,
+      at: Date.now(),
+      messageId,
+      forProjectDir,
+      expiryTimer: undefined as unknown as ReturnType<typeof setTimeout>,
+    };
+    item.expiryTimer = setTimeout(() => {
+      const idx = this.queuedInbound.indexOf(item);
+      if (idx < 0) return; // 已被消费
+      this.queuedInbound.splice(idx, 1);
+      this.feishu.replyToMessage(
+        item.messageId || undefined,
+        item.chatId,
+        '⚠️ 这条排队消息等了 60 分钟仍未被 AI 读取（对话可能已结束），未能送达。需要的话请在 AI 下次询问时重发。',
+      );
+    }, McpFeedbackServer.QUEUE_TTL_MS);
+    item.expiryTimer.unref?.();
+    this.queuedInbound.push(item);
+    debugLog(
+      `Inbound queued for busy AI (project=${forProjectDir}, queueSize=${this.queuedInbound.length})`,
+    );
+    this.feishu.replyToMessage(
+      messageId || undefined,
+      chatId,
+      `🤖 AI 正在工作中，这条消息已排队，将在「${this.projectName(forProjectDir)}」当前任务完成后自动读取。`,
+    );
+  }
+
+  /**
+   * 队列兑现：新一轮 pending 注册时，把属于该项目空间的所有排队消息合并成一次反馈送达，
+   * 正文附「任务期间追加」提示头，并给每条排队消息补 ✅ 送达回执。
+   */
+  private tryConsumeQueue(requestId: string): void {
+    const pending = this.pendingRequests.get(requestId);
+    if (!pending) return;
+    if (this.queuedInbound.length === 0) return;
+    const owner = this.normalizePath(pending.projectDir);
+    const matched = this.queuedInbound.filter((q) =>
+      this.pathsRelated(this.normalizePath(q.forProjectDir), owner),
+    );
+    if (matched.length === 0) return;
+    this.queuedInbound = this.queuedInbound.filter((q) => !matched.includes(q));
+    for (const m of matched) clearTimeout(m.expiryTimer);
+
+    const two = (n: number) => String(n).padStart(2, '0');
+    const fmt = (at: number) => {
+      const d = new Date(at);
+      return `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
+    };
+    const lines = matched.map((m) => {
+      const body = m.text || (m.images.length || m.files.length ? '[图片/附件]' : '');
+      return `[${fmt(m.at)}] ${body}`;
+    });
+    const text =
+      '[QUEUED_MESSAGES] 以下是用户在你执行上一轮任务期间「追加」发送的消息（当时你正忙，消息已排队暂存）。' +
+      '注意：这些内容不是对你最新一轮工作摘要的回复，请结合任务上下文阅读并处理；' +
+      '如与你摘要中的询问冲突，以用户追加内容为准。处理完后照常调用 interactive_feedback 继续对话。\n\n' +
+      `=== 追加消息（${matched.length} 条）===\n` +
+      lines.join('\n\n');
+
+    debugLog(`Consuming ${matched.length} queued message(s) for request: ${requestId}`);
+    clearTimeout(pending.timeout);
+    pending.resolve({
+      interactive_feedback: text,
+      images: matched.flatMap((m) => m.images),
+      attachedFiles: matched.flatMap((m) => m.files),
+      project_directory: pending.projectDir,
+    });
+    this.pendingRequests.delete(requestId);
+    this.feishu.clearPending(requestId);
+    // 标记为「飞书渠道 resolve」：插件面板据此重置，避免对着已消失的请求提交
+    this.lastFeishuResolved = { id: requestId, at: Date.now() };
+    // 送达回执：给每条排队消息补 ✅ 表情
+    for (const m of matched) {
+      this.feishu.reactDone(m.messageId || undefined, m.chatId);
+    }
+  }
+
+  /** 「我的窗口」是否仍活着（无插件 host 无从判定，视为活跃） */
+  private isOwnerAlive(): boolean {
+    if (!this.everOwnerPolled) return true;
+    return Date.now() - this.lastOwnerPollTime <= McpFeedbackServer.OWNER_IDLE_MS;
+  }
+
+  /**
+   * 「无主消息」的忙时排队路由：全局无人等待时，汇总所有实例的活跃项目窗口——
+   * - 恰好 1 个 → 消息排队给它（本地直接入队；远程实例经 /api/feishu/enqueue 转发）；
+   * - 多个 → 回执引导用户回复对应项目的卡片（回复旧卡片也会正确排队到该项目）；
+   * - 0 个 → 返回 false，调用方退回原有短暂存兜底。
+   */
+  private async routeOrphanToQueue(
+    text: string,
+    chatId: string,
+    images: FeedbackResponse['images'],
+    files: string[],
+    messageId: string,
+    remotes: Array<{ port: number; ownerWorkspace: string | null; ownerAlive: boolean }>,
+  ): Promise<boolean> {
+    const candidates: Array<{ port: number | null; workspace: string }> = [];
+    if (this.ownerWorkspace && this.isOwnerAlive()) {
+      candidates.push({ port: null, workspace: this.ownerWorkspace });
+    }
+    for (const r of remotes) {
+      if (r.ownerAlive && r.ownerWorkspace) {
+        candidates.push({ port: r.port, workspace: r.ownerWorkspace });
+      }
+    }
+    // 按 workspace 去重（同窗口多对话共用/多实例只算一个活跃窗口；本地优先）
+    const seen = new Set<string>();
+    const uniq: Array<{ port: number | null; workspace: string }> = [];
+    for (const c of candidates) {
+      const key = this.normalizePath(c.workspace);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniq.push(c);
+    }
+
+    if (uniq.length === 1) {
+      const target = uniq[0];
+      if (target.port === null) {
+        this.enqueueInbound(text, chatId, images, files, messageId, target.workspace);
+        return true;
+      }
+      return this.forwardEnqueue(target.port, text, chatId, images, files, messageId);
+    }
+    if (uniq.length > 1) {
+      const names = uniq.map((c) => this.projectName(c.workspace));
+      this.feishu.replyToMessage(
+        messageId || undefined,
+        chatId,
+        `当前有 ${uniq.length} 个项目窗口在工作（${names.join('、')}），没法判断这条消息要发给谁。\n` +
+          '请「回复」你要发送的那个项目的卡片（旧卡片也行），消息会排队到对应项目。',
+      );
+      return true;
+    }
+    return false;
+  }
+
+  /** 把无主消息转发给远程实例排队（远程会自己入队并回执用户）。返回是否排队成功 */
+  private forwardEnqueue(
+    port: number,
+    text: string,
+    chatId: string,
+    images: FeedbackResponse['images'],
+    files: string[],
+    messageId: string,
+  ): Promise<boolean> {
+    const body = JSON.stringify({ text, chatId, images, attachedFiles: files, messageId });
+    return new Promise<boolean>((resolve) => {
+      const req = http.request(
+        {
+          hostname: '127.0.0.1',
+          port,
+          path: '/api/feishu/enqueue',
+          method: 'POST',
+          timeout: 2000,
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+        },
+        (res) => {
+          let resBody = '';
+          res.on('data', (chunk) => { resBody += chunk.toString(); });
+          res.on('end', () => {
+            try {
+              resolve(!!(JSON.parse(resBody) as { queued?: boolean }).queued);
+            } catch {
+              resolve(false);
+            }
+          });
+        },
+      );
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+      req.write(body);
+      req.end();
+    });
   }
 
   /**
@@ -1315,6 +1616,7 @@ class McpFeedbackServer {
                   appSecret: cfg.appSecret || '',
                   enabled: cfg.enabled,
                   ackReaction: cfg.ackReaction,
+                  queueWhenBusy: cfg.queueWhenBusy,
                   touched: true,
                 });
                 await this.feishu.configure(cfg);
@@ -1412,6 +1714,13 @@ class McpFeedbackServer {
                 // 本实例的卡片刚超时 → 暂存续接下一轮，向广播方声明已认领（未送达时由过期提示回执）
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ handled: true }));
+              } else if (
+                reqId &&
+                this.queueForEndedCard(reqId, text, chatId, images || [], attachedFiles || [], messageId || '')
+              ) {
+                // 本实例的卡片、请求已结束且 AI 正忙 → 消息已排队（或已引导回复新卡片）
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ handled: true }));
               } else {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ handled: false }));
@@ -1435,7 +1744,13 @@ class McpFeedbackServer {
             ? []
             : this.feishu.listPending().map((p) => ({ projectName: this.projectName(p.projectDir) }));
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ count: list.length, list }));
+          // ownerWorkspace / ownerAlive：供其他实例的忙时排队路由定位「活跃项目窗口」
+          res.end(JSON.stringify({
+            count: list.length,
+            list,
+            ownerWorkspace: this.ownerWorkspace,
+            ownerAlive: !!this.ownerWorkspace && !ownerGone,
+          }));
           return;
         }
 
@@ -1463,6 +1778,38 @@ class McpFeedbackServer {
               }
               res.writeHead(200, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ claimed: false }));
+            } catch {
+              res.writeHead(400);
+              res.end('{}');
+            }
+          });
+          return;
+        }
+
+        // 接收「无主消息」的忙时排队转发：本实例是全局唯一活跃窗口时，把消息排进本实例队列
+        // （入队与「已排队」回执都由本实例完成，转发方只关心 queued 结果）
+        if (req.method === 'POST' && req.url === '/api/feishu/enqueue') {
+          let body = '';
+          req.on('data', (chunk) => { body += chunk.toString(); });
+          req.on('end', () => {
+            try {
+              const { text, chatId, images, attachedFiles, messageId } = JSON.parse(body) as {
+                text: string;
+                chatId: string;
+                images?: FeedbackResponse['images'];
+                attachedFiles?: string[];
+                messageId?: string;
+              };
+              if (this.feishu.isQueueWhenBusy() && this.ownerWorkspace) {
+                this.enqueueInbound(
+                  text, chatId, images || [], attachedFiles || [], messageId || '', this.ownerWorkspace,
+                );
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ queued: true }));
+              } else {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ queued: false }));
+              }
             } catch {
               res.writeHead(400);
               res.end('{}');
@@ -1570,6 +1917,7 @@ class McpFeedbackServer {
       appSecret,
       enabled: process.env.FEISHU_ENABLED !== 'false',
       ackReaction: process.env.FEISHU_ACK !== 'false',
+      queueWhenBusy: process.env.FEISHU_QUEUE !== 'false',
     };
   }
 
@@ -1718,6 +2066,12 @@ class McpFeedbackServer {
       pending.resolve(null);
     }
     this.pendingRequests.clear();
+
+    // 清理忙时队列的过期定时器（进程将退出，消息由 60 分钟兜底逻辑以外的重启场景自然失效）
+    for (const q of this.queuedInbound) {
+      clearTimeout(q.expiryTimer);
+    }
+    this.queuedInbound = [];
     
     // 关闭 MCP 服务器
     this.server.close();

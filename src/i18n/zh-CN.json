@@ -73,6 +73,8 @@
   "osNotifyDesc": "IDE 切到后台时，用系统通知提醒你。",
   "feishuAckLabel": "Get 表情回执",
   "feishuAckDesc": "你在飞书回复后，机器人加个 Get 表情表示「已收到」。",
+  "feishuQueueLabel": "忙时消息排队",
+  "feishuQueueDesc": "AI 正忙时你发的消息先排队，等它下一轮询问时自动送达，并附「任务期间追加」提示。",
   "quickReplyDefault1": "继续等待我的反馈",
   "quickReplyDefault2": "结束任务",
   "quickReplyEdit": "编辑快捷短语",

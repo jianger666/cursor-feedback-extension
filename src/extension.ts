@@ -191,6 +191,8 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   private _feishuEnabled: boolean = true;
   // Get 表情回执子开关（飞书通知子项；关掉后用户飞书回复不加 Get 表情、也不发文字兜底）
   private _feishuAck: boolean = true;
+  // 忙时消息排队子开关（飞书通知子项；AI 正忙时用户消息入队，下一轮 feedback 自动送达）
+  private _feishuQueue: boolean = true;
   private _debugInfo: {
     portRange: string;
     workspacePath: string;
@@ -220,6 +222,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     this._feishuConfig = { appId: fc.appId || '', appSecret: fc.appSecret || '' };
     this._feishuEnabled = this._memento?.get<boolean>('feishuEnabled', true) ?? true;
     this._feishuAck = this._memento?.get<boolean>('feishuAck', true) ?? true;
+    this._feishuQueue = this._memento?.get<boolean>('feishuQueue', true) ?? true;
   }
 
   /**
@@ -312,6 +315,9 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'toggleFeishuAck':
           await this._handleToggleFeishuAck(!!data.payload?.enabled);
+          break;
+        case 'toggleFeishuQueue':
+          await this._handleToggleFeishuQueue(!!data.payload?.enabled);
           break;
         case 'testNotification':
           this._sendTestNotification();
@@ -1083,6 +1089,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         bound: this._feishuBound,
         feishuEnabled: this._feishuEnabled,
         feishuAck: this._feishuAck,
+        feishuQueue: this._feishuQueue,
         systemNotification: !!systemNotification,
         osNotification: !!osNotification
       }
@@ -1121,6 +1128,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
           appSecret?: string;
           enabled?: boolean;
           ackReaction?: boolean;
+          queueWhenBusy?: boolean;
         }
       | undefined
   ) {
@@ -1129,6 +1137,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     const appSecret = feishuStatus.appSecret || '';
     const enabled = feishuStatus.enabled !== false;
     const ack = feishuStatus.ackReaction !== false;
+    const queue = feishuStatus.queueWhenBusy !== false;
     const bound = !!feishuStatus.boundChatId;
     let changed = false;
     if (appId !== this._feishuConfig.appId || appSecret !== this._feishuConfig.appSecret) {
@@ -1143,6 +1152,10 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     }
     if (ack !== this._feishuAck) {
       this._feishuAck = ack;
+      changed = true;
+    }
+    if (queue !== this._feishuQueue) {
+      this._feishuQueue = queue;
       changed = true;
     }
     if (bound !== this._feishuBound) {
@@ -1162,6 +1175,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       appSecret,
       enabled: this._feishuEnabled,
       ackReaction: this._feishuAck,
+      queueWhenBusy: this._feishuQueue,
     });
     for (const port of ports) {
       this._httpPost(`http://127.0.0.1:${port}/api/feishu/config`, body).catch(() => {});
@@ -1223,6 +1237,16 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   private async _handleToggleFeishuAck(enabled: boolean) {
     this._feishuAck = enabled;
     await this._memento?.update('feishuAck', enabled);
+    this._broadcastFeishuConfig();
+    this._postFeishuState();
+  }
+
+  /**
+   * 切换「忙时消息排队」子开关（飞书通知的子项；透传到 server 端，控制忙时队列）
+   */
+  private async _handleToggleFeishuQueue(enabled: boolean) {
+    this._feishuQueue = enabled;
+    await this._memento?.update('feishuQueue', enabled);
     this._broadcastFeishuConfig();
     this._postFeishuState();
   }

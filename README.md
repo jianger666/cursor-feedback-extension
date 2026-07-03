@@ -227,6 +227,7 @@ Either way works — but you first need to set up the bot in the Feishu console:
 | `FEISHU_APP_SECRET` | - | Feishu app App Secret |
 | `FEISHU_ENABLED` | `true` | Whether to push feedback to Feishu. Set to `false` to disable |
 | `FEISHU_ACK` | `true` | Whether to react with a "Get" emoji after you reply. Set to `false` to disable |
+| `FEISHU_QUEUE` | `true` | Queue messages while the AI is busy: messages sent when no feedback request is waiting are queued and auto-delivered on the AI's next feedback round, prefixed with an "appended during the task" hint; the bot acknowledges with a "queued" reply. Set to `false` to disable (also toggleable in the panel's notification settings) |
 
 > Priority: **panel config (when credentials are filled) > env here > default**. The panel wins when App ID/Secret are filled; otherwise it falls back to env. You still need to send the bot one message in Feishu to complete binding.
 

@@ -27,6 +27,8 @@ export interface FeishuConfig {
   enabled?: boolean;
   /** Get 表情轻回执开关：false 时用户回复后不加 Get 表情、也不发文字兜底回执 */
   ackReaction?: boolean;
+  /** 忙时消息排队开关：AI 正忙（无等待中的请求）时把用户消息排队，下一轮 feedback 自动送达 */
+  queueWhenBusy?: boolean;
   /** @deprecated 绑定改为磁盘共享文件，不再通过配置传递 */
   boundChatId?: string;
 }
@@ -60,6 +62,7 @@ export interface FeishuStatus {
   connected: boolean;
   enabled: boolean;
   ackReaction: boolean;
+  queueWhenBusy: boolean;
   /** 当前生效的凭证（来自磁盘/env，供插件面板回显；本地 127.0.0.1 传输、无跨域风险） */
   appId: string;
   appSecret: string;
@@ -75,6 +78,8 @@ export class FeishuBridge {
   private enabled = true;
   /** Get 表情轻回执开关（false 时用户回复后不加表情、也不发文字兜底） */
   private ackReaction = true;
+  /** 忙时消息排队开关（true 时 AI 正忙的消息入队等下一轮，false 走旧的短暂存 + 过期提示） */
+  private queueWhenBusy = true;
   /** 绑定关系（appId -> chat_id）持久化到磁盘：多个 server 进程共享、reload 不丢 */
   private bindStorePath = path.join(os.homedir(), '.cursor-feedback', 'feishu-bind.json');
   /** 飞书凭证持久化到磁盘：多个 server 进程共享、reload/重启不丢，作为凭证的全局真相源 */
@@ -84,6 +89,9 @@ export class FeishuBridge {
   private cardToRequest = new Map<string, string>();
   // requestId -> 卡片 message_id（清理用）
   private requestToCard = new Map<string, string>();
+  // requestId -> 归属项目空间：请求结束后仍保留（与卡片映射同生命周期），
+  // 供「回复已结束的旧卡片 → 忙时排队到对应项目」定位归属，随 FIFO 上界一起淘汰
+  private requestProjects = new Map<string, string>();
   // requestId -> 摘要信息（多窗口「列清单」提示用）
   private pendingSummaries = new Map<string, { summary: string; projectDir: string }>();
 
@@ -105,10 +113,15 @@ export class FeishuBridge {
       connected: this.connected,
       enabled: this.enabled,
       ackReaction: this.ackReaction,
+      queueWhenBusy: this.queueWhenBusy,
       appId: this.config?.appId || '',
       appSecret: this.config?.appSecret || '',
       boundChatId: this.getBoundChatId(),
     };
+  }
+
+  isQueueWhenBusy(): boolean {
+    return this.queueWhenBusy;
   }
 
   isConfigured(): boolean {
@@ -188,9 +201,10 @@ export class FeishuBridge {
    * - 凭证为空：视为「关闭飞书」
    */
   async configure(config: FeishuConfig): Promise<void> {
-    // 通知开关 / Get 表情回执开关随时可改（与凭证无关），总是更新
+    // 通知开关 / Get 表情回执开关 / 排队开关随时可改（与凭证无关），总是更新
     this.enabled = config.enabled !== false;
     this.ackReaction = config.ackReaction !== false;
+    this.queueWhenBusy = config.queueWhenBusy !== false;
 
     const sameCred =
       this.config &&
@@ -582,10 +596,14 @@ export class FeishuBridge {
           if (oldest === undefined) break;
           const oldReq = this.cardToRequest.get(oldest);
           this.cardToRequest.delete(oldest);
-          if (oldReq !== undefined) this.requestToCard.delete(oldReq);
+          if (oldReq !== undefined) {
+            this.requestToCard.delete(oldReq);
+            this.requestProjects.delete(oldReq);
+          }
         }
         this.cardToRequest.set(messageId, requestId);
         this.requestToCard.set(requestId, messageId);
+        this.requestProjects.set(requestId, projectDir);
         this.pendingSummaries.set(requestId, { summary, projectDir });
       }
       return messageId;
@@ -599,6 +617,11 @@ export class FeishuBridge {
   resolveParent(parentId: string | null): string | null {
     if (!parentId) return null;
     return this.cardToRequest.get(parentId) || null;
+  }
+
+  /** 查某 requestId 卡片的归属项目空间（请求结束后仍可查，用于忙时排队路由） */
+  projectDirOf(requestId: string): string | null {
+    return this.requestProjects.get(requestId) || null;
   }
 
   /** 本实例当前待回复的请求数（用于多窗口判断） */
