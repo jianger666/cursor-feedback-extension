@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [2.2.0](https://github.com/jianger666/cursor-feedback-extension/compare/v2.1.2...v2.2.0) (2026-07-03)
+
+
+### Features
+
+* **feishu:** 忙时消息排队——AI 干活期间的飞书消息不再丢失 ([fd8aa75](https://github.com/jianger666/cursor-feedback-extension/commit/fd8aa7540a787dbb44e85f35ea137a0c0ea9c03e))
+
 ### [2.1.2](https://github.com/jianger666/cursor-feedback-extension/compare/v2.1.1...v2.1.2) (2026-07-03)
 
 
