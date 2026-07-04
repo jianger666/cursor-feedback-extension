@@ -69,6 +69,20 @@ export interface FeishuStatus {
   boundChatId: string | null;
 }
 
+/** 「扫码一键创建应用」流程状态（Device Authorization Grant，见 SDK registerApp） */
+export interface FeishuRegisterState {
+  status: 'idle' | 'waiting' | 'success' | 'error';
+  /** 待用户在飞书中打开/扫码的验证链接（waiting 时有值） */
+  url?: string;
+  /** 验证链接的二维码 data URL（server 侧生成：插件 VSIX 不带 node_modules，无法本地生成） */
+  qr?: string;
+  /** 链接有效期（秒） */
+  expireIn?: number;
+  /** 创建成功的 App ID（success 时有值；secret 不随状态下发，走常规凭证同步） */
+  appId?: string;
+  error?: string;
+}
+
 export class FeishuBridge {
   private lark: any = null;
   private client: any = null; // Lark.Client：调用 API 发消息
@@ -126,6 +140,123 @@ export class FeishuBridge {
 
   isConfigured(): boolean {
     return !!this.config;
+  }
+
+  // ---------- 扫码一键创建应用（registerApp / Device Grant） ----------
+  private registerState: FeishuRegisterState = { status: 'idle' };
+  private registerAbort: AbortController | null = null;
+
+  getRegisterState(): FeishuRegisterState {
+    return this.registerState;
+  }
+
+  /**
+   * 启动「扫码一键创建应用」：返回待扫码的验证链接（等 onQRCodeReady 就绪后才返回）。
+   * 用户在飞书里确认后 SDK resolve 出凭证 → 与手动在面板保存等价（写磁盘 touched + configure 立即生效）。
+   * 已有等待中的流程直接复用当前二维码，不重复发起。
+   */
+  async startRegister(): Promise<FeishuRegisterState> {
+    if (this.registerState.status === 'waiting' && this.registerAbort) {
+      return this.registerState;
+    }
+    if (!this.lark) {
+      try {
+        this.lark = await import('@larksuiteoapi/node-sdk');
+      } catch (e) {
+        flog('飞书 SDK 加载失败: ' + e);
+        this.registerState = { status: 'error', error: 'sdk_load_failed' };
+        return this.registerState;
+      }
+    }
+    if (typeof this.lark.registerApp !== 'function') {
+      this.registerState = { status: 'error', error: 'sdk_too_old' };
+      return this.registerState;
+    }
+
+    const abort = new AbortController();
+    this.registerAbort = abort;
+    const state: FeishuRegisterState = { status: 'waiting' };
+    this.registerState = state;
+
+    let urlResolve: () => void = () => {};
+    const urlReady = new Promise<void>((resolve) => {
+      urlResolve = resolve;
+      setTimeout(resolve, 10000); // 兜底：10s 拿不到二维码就按错误返回
+    });
+
+    this.lark
+      .registerApp({
+        signal: abort.signal,
+        onQRCodeReady: (info: { url: string; expireIn: number }) => {
+          state.url = info.url;
+          state.expireIn = info.expireIn;
+          urlResolve();
+        },
+        appPreset: {
+          name: 'Cursor Feedback',
+          desc: 'Cursor AI 交互反馈通知机器人（由 cursor-feedback 插件扫码创建）',
+        },
+        // 平台基础模板已含收发消息 / reaction / 长连接事件；这里增量补齐本插件用到的资源权限。
+        // 平台不认识的名字会在确认页被静默丢弃，不会导致流程失败。
+        addons: {
+          scopes: { tenant: ['im:message', 'im:message:send_as_bot', 'im:resource'] },
+          events: { items: { tenant: ['im.message.receive_v1'] } },
+        },
+        // 只允许创建新应用：避免用户误选已有应用、其配置被覆盖
+        createOnly: true,
+      })
+      .then(async (result: { client_id: string; client_secret: string }) => {
+        if (this.registerState !== state) return; // 已被取消/新流程覆盖
+        const cfg: FeishuConfig = {
+          appId: result.client_id,
+          appSecret: result.client_secret,
+          enabled: this.enabled,
+          ackReaction: this.ackReaction,
+          queueWhenBusy: this.queueWhenBusy,
+        };
+        this.writePersistedConfig({ ...cfg, touched: true });
+        await this.configure(cfg);
+        state.status = 'success';
+        state.appId = result.client_id;
+        state.url = undefined;
+        flog(`扫码创建应用成功: ${result.client_id}`);
+      })
+      .catch((e: { code?: string; description?: string }) => {
+        if (this.registerState !== state) return;
+        state.status = 'error';
+        state.url = undefined;
+        state.error = [e?.code, e?.description].filter(Boolean).join(': ') || String(e);
+        flog(`扫码创建应用失败: ${state.error}`);
+      });
+
+    await urlReady;
+    if (state.status === 'waiting' && !state.url) {
+      abort.abort();
+      this.registerAbort = null;
+      this.registerState = { status: 'error', error: 'qr_timeout' };
+      return this.registerState;
+    }
+    // 二维码在 server 侧生成（插件 VSIX 不带 node_modules）；失败则面板退化为只显示链接按钮
+    if (state.status === 'waiting' && state.url) {
+      try {
+        const QRCode = await import('qrcode');
+        state.qr = await QRCode.toDataURL(state.url, { margin: 1, width: 220 });
+      } catch (e) {
+        flog('二维码生成失败（退化为链接）: ' + e);
+      }
+    }
+    return this.registerState;
+  }
+
+  /** 取消进行中的扫码创建流程（用户关闭弹窗 / 主动取消） */
+  cancelRegister(): void {
+    if (this.registerAbort) {
+      this.registerAbort.abort();
+      this.registerAbort = null;
+    }
+    if (this.registerState.status === 'waiting') {
+      this.registerState = { status: 'idle' };
+    }
   }
 
   /** 读取当前 appId 对应的绑定 chat_id（来自磁盘，跨进程共享） */

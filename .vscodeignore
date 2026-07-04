@@ -15,4 +15,3 @@ tsconfig.json
 .env
 *.vsix
 !dist/**
-!docs/feishu-setup.md

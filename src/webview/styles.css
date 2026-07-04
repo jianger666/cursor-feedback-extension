@@ -126,15 +126,12 @@ svg {
   outline: none;
 }
 
-/* ---------- Tooltips (data-tip) ---------- */
-[data-tip] {
-  position: relative;
-}
-[data-tip]:hover::after {
-  content: attr(data-tip);
-  position: absolute;
-  bottom: calc(100% + 6px);
-  right: 0;
+/* ---------- Tooltips (data-tip) ----------
+   由 script.js 用单例浮层 + fixed 定位渲染（自动上下翻转、水平钳制在视口内），
+   不再用 ::after——绝对定位的伪元素会被任何 overflow 祖先裁切（曾致多处 tooltip 缺角） */
+.tip-float {
+  position: fixed;
+  z-index: 1000;
   padding: 4px 8px;
   background: var(--vscode-editorWidget-background, #252526);
   color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
@@ -142,19 +139,14 @@ svg {
   border-radius: var(--radius-sm);
   font-size: 11px;
   white-space: nowrap;
-  z-index: 50;
+  max-width: calc(100vw - 16px);
+  overflow: hidden;
+  text-overflow: ellipsis;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
   pointer-events: none;
 }
-/* 状态栏在窗口顶部，tooltip 改为向下展开，避免被窗口顶部裁切 */
-.statusbar [data-tip]:hover::after {
-  bottom: auto;
-  top: calc(100% + 6px);
-}
-/* 弹窗头部（关闭按钮）在面板顶部，且面板 overflow-y:auto 会裁掉朝上的 tooltip，改为向下展开 */
-.feishu-modal__head [data-tip]:hover::after {
-  bottom: auto;
-  top: calc(100% + 6px);
+.tip-float.hidden {
+  display: none;
 }
 
 /* ---------- Status bar ---------- */
@@ -240,6 +232,7 @@ svg {
 .empty__icon {
   display: grid;
   place-items: center;
+  flex: none; /* 高度受限（如排队列表占位）时不被压扁 */
   width: 56px;
   height: 56px;
   border-radius: 50%;
@@ -266,6 +259,132 @@ svg {
 @keyframes breathe {
   0%, 100% { transform: translateY(0); opacity: 0.85; }
   50% { transform: translateY(-3px); opacity: 1; }
+}
+
+/* ---------- Queue mode（AI 忙时排队） ----------
+   等待提示压缩为顶部小条，下方保留可用的输入框与队列列表 */
+.queue-mode .empty {
+  flex: 0 0 auto;
+  padding: 14px var(--sp-4);
+  gap: var(--sp-1);
+  overflow: hidden; /* 拖到最小高度时裁剪而非溢出 */
+  /* 高度由 JS 设定（与摘要卡同一比例），队列消息只在卡片内滚动，不挤压下方输入框 */
+  /* 与下方反馈卡片一致的卡片外观，避免裸内容悬空 */
+  background: var(--surface-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.queue-mode .empty__icon {
+  width: 34px;
+  height: 34px;
+}
+.queue-mode .empty__icon svg {
+  width: 16px;
+  height: 16px;
+}
+.queue-mode .empty__hint {
+  max-width: 260px;
+}
+
+/* 排队中的消息列表（内嵌在等待卡片里：卡片高度固定由分隔条控制，列表内部滚动，
+   不会随消息增多挤压下方输入框） */
+.waiting-queue {
+  align-self: stretch;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--line-soft);
+  text-align: left;
+}
+.waiting-queue__head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: 6px;
+}
+.waiting-queue__title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.waiting-queue .queue-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.queue-count {
+  margin-left: auto;
+  font-size: 11px;
+  line-height: 16px;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface-sunken);
+  border: 1px solid var(--line-soft);
+  font-variant-numeric: tabular-nums;
+}
+.queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-sunken);
+  border: 1px solid var(--line-soft);
+}
+.queue-item__source {
+  flex: none;
+  font-size: 10px;
+  line-height: 15px;
+  padding: 0 5px;
+  border-radius: 999px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+.queue-item__source.is-feishu {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.queue-item__text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--vscode-foreground);
+}
+.queue-item__meta {
+  flex: none;
+  color: var(--muted);
+}
+.queue-item__time {
+  flex: none;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.queue-item .chip-remove.queue-item__remove {
+  position: static;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  opacity: 0.5;
+  background: transparent;
+  color: var(--muted);
+}
+.queue-item .chip-remove.queue-item__remove:hover {
+  opacity: 1;
+  background: transparent;
+  color: var(--vscode-errorForeground, #e51400);
 }
 
 /* ---------- Form ---------- */
@@ -314,6 +433,37 @@ svg {
   font-weight: 600;
   letter-spacing: 0.01em;
   color: var(--vscode-foreground);
+}
+
+/* 历史摘要导航（摘要卡头部右侧的 ‹ n/m › ） */
+.summary-nav {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.summary-nav__btn {
+  width: 18px;
+  height: 18px;
+}
+.summary-nav__btn svg {
+  width: 12px;
+  height: 12px;
+}
+.summary-nav__btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.summary-nav__pos {
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 26px;
+  text-align: center;
+}
+/* 正在查看历史轮次的摘要：内容淡化以示区分 */
+.summary--past {
+  opacity: 0.72;
 }
 
 /* ---------- Resizable panels ---------- */
@@ -809,6 +959,8 @@ body.vscode-light .hljs-regexp { color: #811f3f; }
   gap: var(--sp-2);
 }
 .countdown[hidden] { display: none; }
+/* 排队态占位：整行不可见但保留高度，避免反馈态 ↔ 排队态切换时提交栏高度跳动 */
+.countdown--idle { visibility: hidden; }
 .countdown__pause {
   width: 22px;
   height: 22px;
@@ -1075,6 +1227,50 @@ body.vscode-light .hljs-regexp { color: #811f3f; }
   cursor: pointer;
 }
 .feishu-link:hover { text-decoration: underline; }
+
+/* 扫码创建是配置飞书的首选路径，做成实心小按钮突出 */
+.feishu-link--primary {
+  padding: 5px 12px;
+  border-radius: 6px;
+  background: var(--vscode-button-background, var(--accent));
+  color: var(--vscode-button-foreground, #fff);
+  font-weight: 600;
+}
+.feishu-link--primary:hover {
+  text-decoration: none;
+  background: var(--vscode-button-hoverBackground, var(--accent));
+  filter: brightness(1.08);
+}
+
+/* 扫码一键创建应用（点「扫码快速创建」后展开的二维码区） */
+.feishu-register {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-md);
+}
+.feishu-register__qr {
+  width: 180px;
+  height: 180px;
+  padding: 6px;
+  background: #fff;
+  border-radius: var(--radius-md);
+}
+.feishu-register__hint {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+  text-align: center;
+  word-break: break-all;
+}
+.feishu-register__actions {
+  display: flex;
+  gap: 12px;
+}
 .feishu-modal__hint {
   margin: 0;
   font-size: 11px;

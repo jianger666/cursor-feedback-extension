@@ -20,7 +20,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/></svg>
         </button>
         <button id="autoRetryBtn" class="iconbtn" type="button" aria-label="Timeout keep-waiting / 超时续期" data-tip="Timeout keep-waiting / 超时续期">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/></svg>
         </button>
         <button id="themeAccentBtn" class="iconbtn" type="button" aria-label="Accent color / 主题色" data-tip="Accent color / 主题色">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.555C21.965 6.012 17.461 2 12 2z"/></svg>
@@ -37,13 +37,20 @@
       </div>
     </header>
 
-    <!-- 等待态 -->
+    <!-- 等待态（排队模式下排队消息列表内嵌在此卡片中，整体高度由分隔条控制） -->
     <section id="waitingStatus" class="empty">
       <div class="empty__icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
       </div>
       <p class="empty__title">{{i18n.waitingForAI}}</p>
       <p class="empty__hint">{{i18n.waitingHint}}</p>
+      <div id="queueCard" class="waiting-queue hidden">
+        <div class="waiting-queue__head">
+          <span class="waiting-queue__title">{{i18n.queuedTitle}}</span>
+          <span id="queueCount" class="queue-count"></span>
+        </div>
+        <div id="queueList" class="queue-list"></div>
+      </div>
     </section>
 
     <!-- 反馈表单 -->
@@ -55,6 +62,16 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .962 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.962 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/></svg>
           </span>
           <h2 class="card__title">{{i18n.aiSummary}}</h2>
+          <!-- 历史摘要导航：存过 2 条以上时显示，可回看之前轮次的 AI 摘要 -->
+          <div id="summaryNav" class="summary-nav" hidden>
+            <button id="summaryPrevBtn" class="iconbtn summary-nav__btn" type="button" aria-label="{{i18n.summaryPrevTip}}" data-tip="{{i18n.summaryPrevTip}}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+            </button>
+            <span id="summaryNavPos" class="summary-nav__pos"></span>
+            <button id="summaryNextBtn" class="iconbtn summary-nav__btn" type="button" aria-label="{{i18n.summaryNextTip}}" data-tip="{{i18n.summaryNextTip}}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+            </button>
+          </div>
         </div>
         <div id="summaryContent" class="summary markdown-body"></div>
         <div id="projectInfo" class="project-chip"></div>
@@ -183,7 +200,17 @@
         </div>
       </div>
 
-      <!-- 区块②：飞书通知（推送开关 + 凭证 + 绑定状态） -->
+      <!-- 区块②：忙时消息排队（全局开关：飞书与面板消息共用忙时队列） -->
+      <div class="feishu-section">
+        <label class="feishu-switch">
+          <span class="feishu-switch__label feishu-switch__label--strong">{{i18n.queueWhenBusyLabel}}</span>
+          <input id="queueWhenBusyToggle" type="checkbox" class="feishu-switch__input">
+          <span class="feishu-switch__track"><span class="feishu-switch__thumb"></span></span>
+        </label>
+        <p class="feishu-modal__desc">{{i18n.queueWhenBusyDesc}}</p>
+      </div>
+
+      <!-- 区块③：飞书通知（推送开关 + 凭证 + 绑定状态） -->
       <div class="feishu-section">
         <label class="feishu-switch">
           <span class="feishu-switch__label feishu-switch__label--strong">{{i18n.feishuSettings}}</span>
@@ -198,14 +225,6 @@
             <span class="feishu-switch__track"><span class="feishu-switch__thumb"></span></span>
           </label>
           <p class="feishu-modal__desc feishu-modal__desc--sub">{{i18n.feishuAckDesc}}</p>
-        </div>
-        <div id="feishuQueueSub" class="feishu-subitem">
-          <label class="feishu-switch">
-            <span class="feishu-switch__label">{{i18n.feishuQueueLabel}}</span>
-            <input id="feishuQueueToggle" type="checkbox" class="feishu-switch__input">
-            <span class="feishu-switch__track"><span class="feishu-switch__thumb"></span></span>
-          </label>
-          <p class="feishu-modal__desc feishu-modal__desc--sub">{{i18n.feishuQueueDesc}}</p>
         </div>
         <label class="feishu-field">
           <span class="feishu-field__label">{{i18n.feishuAppId}}</span>
@@ -226,7 +245,16 @@
           <span id="feishuStatusText" class="feishu-status__text">{{i18n.feishuStatusUnconfigured}}</span>
         </div>
         <div class="feishu-modal__actions">
-          <button id="feishuGuideBtn" class="feishu-link" type="button">{{i18n.feishuGuide}}</button>
+          <button id="feishuRegisterBtn" class="feishu-link feishu-link--primary" type="button">{{i18n.feishuRegisterBtn}}</button>
+        </div>
+        <!-- 扫码一键创建应用：点击上方按钮后展开，展示验证二维码与流程状态 -->
+        <div id="feishuRegisterPanel" class="feishu-register hidden">
+          <img id="feishuRegisterQr" class="feishu-register__qr hidden" alt="QR code">
+          <p id="feishuRegisterHint" class="feishu-register__hint"></p>
+          <div class="feishu-register__actions">
+            <button id="feishuRegisterOpenBtn" class="feishu-link hidden" type="button">{{i18n.registerOpenLink}}</button>
+            <button id="feishuRegisterRetryBtn" class="feishu-link hidden" type="button">{{i18n.registerRetry}}</button>
+          </div>
         </div>
         <p class="feishu-modal__hint">{{i18n.feishuHint}}</p>
       </div>

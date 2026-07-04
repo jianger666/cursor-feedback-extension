@@ -62,7 +62,6 @@ export type I18nMessages = {
   feishuAppSecret: string;
   feishuAppIdPlaceholder: string;
   feishuSecretPlaceholder: string;
-  feishuGuide: string;
   feishuClose: string;
   feishuStatusUnconfigured: string;
   feishuStatusConfigured: string;
@@ -77,6 +76,29 @@ export type I18nMessages = {
   osNotifyDesc: string;
   feishuAckLabel: string;
   feishuAckDesc: string;
+  queueWhenBusyLabel: string;
+  queueWhenBusyDesc: string;
+  queueSend: string;
+  queuedTitle: string;
+  queueModeHint: string;
+  toastPanelQueued: string;
+  queueFailedPending: string;
+  queueFailedDisabled: string;
+  queueFailedNoServer: string;
+  sourceFeishu: string;
+  sourcePanel: string;
+  queueMetaImages: string;
+  queueMetaFiles: string;
+  summaryPrevTip: string;
+  summaryNextTip: string;
+  feishuRegisterBtn: string;
+  registerLoading: string;
+  registerScanHint: string;
+  registerOpenLink: string;
+  registerRetry: string;
+  registerSuccess: string;
+  registerFailed: string;
+  registerNoServer: string;
   quickReplyDefault1: string;
   quickReplyDefault2: string;
   quickReplyEdit: string;
@@ -215,7 +237,6 @@ function getDefaultMessages(): I18nMessages {
     feishuAppSecret: "App Secret",
     feishuAppIdPlaceholder: "cli_xxxxxxxx",
     feishuSecretPlaceholder: "Enter App Secret",
-    feishuGuide: "How to set up a Feishu bot?",
     feishuClose: "Close",
     feishuStatusUnconfigured: "Not configured",
     feishuStatusConfigured: "Configured · send your bot a message to bind",
@@ -230,6 +251,29 @@ function getDefaultMessages(): I18nMessages {
     osNotifyDesc: "Sends a system notification when the IDE is in the background.",
     feishuAckLabel: "Get emoji acknowledgement",
     feishuAckDesc: "After you reply in Feishu, the bot adds a Get emoji as acknowledgement.",
+    queueWhenBusyLabel: "Queue messages while AI is busy",
+    queueWhenBusyDesc: "While the AI is busy, messages from the panel and Feishu are queued and auto-delivered in order on its next feedback round, marked as appended during the task.",
+    queueSend: "Queue Message",
+    queuedTitle: "Queued messages",
+    queueModeHint: "AI is busy — messages sent now are queued and delivered when it next asks for feedback",
+    toastPanelQueued: "✓ Queued — the AI will receive it after finishing this task",
+    queueFailedPending: "AI is waiting for your feedback — submit it directly instead",
+    queueFailedDisabled: "Busy-time queuing is turned off in settings — the message was not queued",
+    queueFailedNoServer: "No active AI session found — the message was not queued",
+    sourceFeishu: "Feishu",
+    sourcePanel: "Panel",
+    queueMetaImages: "img",
+    queueMetaFiles: "file",
+    summaryPrevTip: "Older summary",
+    summaryNextTip: "Newer summary",
+    feishuRegisterBtn: "Create app by QR code",
+    registerLoading: "Getting QR code…",
+    registerScanHint: "Scan with Feishu to confirm — permissions are preset and credentials fill in automatically",
+    registerOpenLink: "Don't want to scan? Create via link",
+    registerRetry: "Retry",
+    registerSuccess: "Created! Credentials configured automatically",
+    registerFailed: "Creation failed",
+    registerNoServer: "MCP Server is not running — cannot start creation",
     quickReplyDefault1: "Keep waiting for my feedback",
     quickReplyDefault2: "End the task",
     quickReplyEdit: "Edit quick replies",

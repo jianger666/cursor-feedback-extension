@@ -108,6 +108,18 @@ interface FeedbackRequest {
   timestamp: number;
 }
 
+/** 忙时排队消息快照（server 随轮询下发，面板展示队列列表用） */
+interface QueuedItem {
+  id: string;
+  at: number;
+  source: 'feishu' | 'panel';
+  text: string;
+  images: number;
+  files: number;
+  /** 该队列项所在 server 的端口（extension 汇总时打标，撤回请求按它路由） */
+  port?: number;
+}
+
 /**
  * 获取当前工作区路径列表
  */
@@ -193,6 +205,9 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   private _feishuAck: boolean = true;
   // 忙时消息排队子开关（飞书通知子项；AI 正忙时用户消息入队，下一轮 feedback 自动送达）
   private _feishuQueue: boolean = true;
+  // 最近一次下发给 webview 的队列快照（签名去重避免每秒刷屏；webview 重建后凭此恢复列表）
+  private _lastQueueSig = '';
+  private _lastQueueItems: QueuedItem[] = [];
   private _debugInfo: {
     portRange: string;
     workspacePath: string;
@@ -264,11 +279,22 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         case 'submitFeedback':
           await this._handleFeedbackSubmit(data.payload);
           break;
+        case 'queueMessage':
+          await this._handleQueueMessage(data.payload);
+          break;
+        case 'removeQueued':
+          await this._handleRemoveQueued(data.payload);
+          break;
         case 'ready':
           this._webviewReady = true;
           // 同步超时续期开关状态到 UI
           this._postAutoRetryState();
           this._postFeishuState();
+          // 重建后的 webview 恢复队列列表显示（poll 之后每秒还会校准）
+          this._view?.webview.postMessage({
+            type: 'queueState',
+            payload: { items: this._lastQueueItems }
+          });
           // WebView 准备就绪后，检查是否有待处理的请求
           // （插件通知关闭时保持静默，不显示缓存的请求）
           if (this._currentRequest && this._isPluginNotifyEnabled()) {
@@ -301,9 +327,6 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         case 'saveFeishuConfig':
           await this._handleSaveFeishuConfig(data.payload);
           break;
-        case 'openFeishuGuide':
-          await this._handleOpenFeishuGuide();
-          break;
         case 'toggleFeishuEnabled':
           await this._handleToggleFeishuEnabled(!!data.payload?.enabled);
           break;
@@ -318,6 +341,15 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'toggleFeishuQueue':
           await this._handleToggleFeishuQueue(!!data.payload?.enabled);
+          break;
+        case 'feishuRegisterStart':
+          await this._handleFeishuRegisterStart();
+          break;
+        case 'feishuRegisterCancel':
+          this._handleFeishuRegisterCancel();
+          break;
+        case 'openLink':
+          this._handleOpenLink(data.payload?.url);
           break;
         case 'testNotification':
           this._sendTestNotification();
@@ -400,6 +432,9 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
             // 端口仍然有效，保持使用
             this._debugInfo.connectedPorts = [this._activePort];
             this._debugInfo.activePort = this._activePort;
+
+            // 同步忙时队列快照到面板（签名去重，无变化不发）；打上端口标，撤回时按它路由
+            this._postQueueState((result.queued || []).map(q => ({ ...q, port: this._activePort! })));
             
             // 只挡「已提交/已结束」的请求；_handleNewRequest 内部按当前显示态去重，重复调用无害
             if (result.request && !this._resolvedRequestIds.has(result.request.id)) {
@@ -439,6 +474,13 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       
       // 更新已连接的端口列表
       this._debugInfo.connectedPorts = results.filter(r => r.connected).map(r => r.port);
+
+      // 汇总各 server 返回的本工作区忙时队列（正常只有归属本窗口的 server 有内容），按时间排序下发；
+      // 打上各自 server 的端口标，撤回时按它路由
+      const queuedAll = results
+        .flatMap(r => (r.connected && Array.isArray(r.queued) ? r.queued.map(q => ({ ...q, port: r.port })) : []))
+        .sort((a, b) => a.at - b.at);
+      this._postQueueState(queuedAll);
       
       // 找出属于当前工作区的请求（只排除已提交/已结束的；「见过但没提交」的仍要能回到面板）。
       // 不再用 server 进程级 ownerWorkspace 二次过滤：request 已在 _checkPortForRequest
@@ -504,6 +546,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     mismatch?: boolean; // 是否有请求但路径不匹配
     ownerWorkspace?: string | null; // Server 的所属工作区
     feishuResolvedId?: string | null; // server 标记的「最近被飞书回复」的请求 id
+    queued?: QueuedItem[]; // 本工作区的忙时排队消息快照
   }> {
     try {
       // 带上工作区路径用于匹配
@@ -519,12 +562,14 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
       let request: FeedbackRequest | null;
       let ownerWorkspace: string | null = null;
       let feishuResolvedId: string | null = null;
+      let queued: QueuedItem[] = [];
       
       if (parsed && typeof parsed === 'object' && 'startTime' in parsed) {
         // 新格式
         request = parsed.request;
         ownerWorkspace = parsed.ownerWorkspace;
         feishuResolvedId = parsed.feishuResolvedId ?? null;
+        if (Array.isArray(parsed.queued)) queued = parsed.queued;
         this._maybeSyncFeishu(port, parsed.feishu);
         this._maybeSyncAutoRetry(parsed.autoRetry);
         this._maybeSyncPause(parsed.pause);
@@ -539,11 +584,11 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         
         if (!isMatch) {
           // 请求不属于当前工作区，返回特殊标记
-          return { connected: true, request: null, port, mismatch: true, ownerWorkspace };
+          return { connected: true, request: null, port, mismatch: true, ownerWorkspace, queued };
         }
       }
       
-      return { connected: true, request, port, ownerWorkspace, feishuResolvedId };
+      return { connected: true, request, port, ownerWorkspace, feishuResolvedId, queued };
     } catch {
       return { connected: false, request: null, port };
     }
@@ -853,6 +898,111 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     } catch (error) {
       vscode.window.showErrorMessage(this._i18n.submitFailed + ': ' + this._i18n.cannotConnectMCP);
     }
+  }
+
+  /**
+   * 把忙时队列快照推给 webview（签名去重：队列无变化时每秒轮询不重复发）
+   */
+  private _postQueueState(items: QueuedItem[]) {
+    const sig = JSON.stringify(items);
+    if (sig === this._lastQueueSig) return;
+    this._lastQueueSig = sig;
+    this._lastQueueItems = items;
+    this._view?.webview.postMessage({ type: 'queueState', payload: { items } });
+  }
+
+  /**
+   * 面板忙时排队：AI 正忙（没有等待中的反馈请求）时用户在面板点了「排队发送」。
+   * 先定位归属本工作区的 server（AI 的下一轮 interactive_feedback 会走同一个 MCP 进程，
+   * 队列必须排在那里才能被消费），再 POST 入队。找不到归属 server = AI 没在本项目工作，
+   * 明确告知失败，绝不静默吞消息。
+   */
+  private async _handleQueueMessage(payload: {
+    interactive_feedback: string;
+    images: Array<{ name: string; data: string; size: number }>;
+    attachedFiles: string[];
+  }) {
+    const workspacePaths = getWorkspacePaths();
+    const workspacePath = workspacePaths.length > 0 ? workspacePaths[0] : '';
+    const fail = (reason: string) => {
+      this._view?.webview.postMessage({ type: 'queueSubmitted', payload: { success: false, reason } });
+    };
+    if (!workspacePath) {
+      fail('no-server');
+      return;
+    }
+    const port = await this._findOwnerPort(workspacePath);
+    if (!port) {
+      fail('no-server');
+      return;
+    }
+    try {
+      const response = await this._httpPost(
+        `http://127.0.0.1:${port}/api/feedback/enqueue`,
+        JSON.stringify({
+          text: payload.interactive_feedback,
+          images: payload.images || [],
+          attachedFiles: payload.attachedFiles || [],
+          projectDir: workspacePath
+        })
+      );
+      const result = JSON.parse(response);
+      if (result.queued) {
+        this._view?.webview.postMessage({ type: 'queueSubmitted', payload: { success: true } });
+      } else {
+        fail(result.reason === 'pending' || result.reason === 'disabled' ? result.reason : 'no-server');
+      }
+    } catch {
+      fail('no-server');
+    }
+  }
+
+  /**
+   * 撤回一条排队消息：按队列项携带的端口路由到所在 server。
+   * webview 已做乐观移除；失败也无需提示——下一秒轮询会把仍在队列里的消息补回列表。
+   */
+  private async _handleRemoveQueued(payload: { id: string; port?: number }) {
+    if (!payload || !payload.id || typeof payload.port !== 'number') return;
+    try {
+      await this._httpPost(
+        `http://127.0.0.1:${payload.port}/api/feedback/queue/remove`,
+        JSON.stringify({ id: payload.id })
+      );
+    } catch {
+      // 静默：轮询会校准列表
+    }
+  }
+
+  /**
+   * 定位归属指定工作区的 MCP server 端口（ownerWorkspace 与工作区路径互为前缀）。
+   * 优先试当前已知端口，避免全端口扫描；都不中再并行扫描全范围。
+   */
+  private async _findOwnerPort(workspacePath: string): Promise<number | null> {
+    const normalizedWs = normalizePath(workspacePath);
+    const isOwner = async (port: number): Promise<boolean> => {
+      try {
+        const response = await this._httpGet(
+          `http://127.0.0.1:${port}/api/feedback/current?workspace=${encodeURIComponent(workspacePath)}`
+        );
+        const parsed = JSON.parse(response);
+        const owner = parsed && parsed.ownerWorkspace ? normalizePath(parsed.ownerWorkspace) : '';
+        return !!owner && pathsRelated(owner, normalizedWs);
+      } catch {
+        return false;
+      }
+    };
+    const preferred = [this._currentRequestPort, this._activePort]
+      .filter((p): p is number => typeof p === 'number');
+    for (const p of preferred) {
+      if (await isOwner(p)) return p;
+    }
+    const ports: number[] = [];
+    for (let i = 0; i < this._portScanRange; i++) {
+      const p = this._basePort + i;
+      if (!preferred.includes(p)) ports.push(p);
+    }
+    const hits = await Promise.all(ports.map(async (p) => ((await isOwner(p)) ? p : null)));
+    return hits.find((p): p is number => p !== null) ?? null;
   }
 
   /**
@@ -1182,23 +1332,104 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  // ---------- 扫码一键创建飞书应用 ----------
+  private _registerPollTimer: NodeJS.Timeout | null = null;
+  private _registerPort: number | null = null;
+
+  private _postRegisterState(payload: Record<string, unknown>) {
+    this._view?.webview.postMessage({ type: 'feishuRegisterState', payload });
+  }
+
   /**
-   * 打开「如何配置飞书机器人」指引
+   * 发起扫码创建：找一个活跃的 MCP server（凭证写磁盘全局共享，任一进程均可），
+   * 拿到验证链接后本地生成二维码 dataURL 推给面板，随后轮询直到成功/失败。
    */
-  private async _handleOpenFeishuGuide() {
-    const onlineUrl =
-      'https://github.com/jianger666/cursor-feedback-extension/blob/main/docs/feishu-setup.md';
-    const guideUri = vscode.Uri.joinPath(this._extensionUri, 'docs', 'feishu-setup.md');
-    try {
-      // 先 stat 确认打进包的本地文档在、再站内预览。
-      // markdown.showPreview 对缺失文件不报错、只渲染「找不到 feishu-setup.md」、catch 也不触发——
-      // 所以必须自己先校验存在、否则一旦打包又漏了 docs 就退回原 bug。
-      await vscode.workspace.fs.stat(guideUri);
-      await vscode.commands.executeCommand('markdown.showPreview', guideUri);
-    } catch {
-      // 本地没有（打包漏了 / 环境异常）→ 兜底开 GitHub 在线文档、绝不让用户再撞「找不到」
-      await vscode.env.openExternal(vscode.Uri.parse(onlineUrl));
+  private async _handleFeishuRegisterStart() {
+    this._stopRegisterPolling();
+    const port = await this._findAnyServerPort();
+    if (!port) {
+      this._postRegisterState({ status: 'error', error: this._i18n.registerNoServer });
+      return;
     }
+    this._registerPort = port;
+    try {
+      // register/start 要等二维码就绪（服务端最多 10s）才响应，超时给足余量。
+      // 二维码 dataURL 由 server 生成（插件 VSIX 不带 node_modules，装不进二维码库）
+      const raw = await this._httpPost(`http://127.0.0.1:${port}/api/feishu/register/start`, '{}', 15000);
+      const state = JSON.parse(raw) as { status: string; url?: string; qr?: string; expireIn?: number; error?: string };
+      if (state.status === 'waiting' && state.url) {
+        this._postRegisterState({ status: 'waiting', url: state.url, expireIn: state.expireIn, qr: state.qr });
+        this._startRegisterPolling(port);
+      } else {
+        this._postRegisterState({ status: 'error', error: state.error || 'failed' });
+      }
+    } catch {
+      this._postRegisterState({ status: 'error', error: this._i18n.registerNoServer });
+    }
+  }
+
+  private _handleFeishuRegisterCancel() {
+    this._stopRegisterPolling();
+    if (this._registerPort) {
+      this._httpPost(`http://127.0.0.1:${this._registerPort}/api/feishu/register/cancel`, '{}').catch(() => {});
+      this._registerPort = null;
+    }
+  }
+
+  private _startRegisterPolling(port: number) {
+    this._stopRegisterPolling();
+    this._registerPollTimer = setInterval(async () => {
+      try {
+        const raw = await this._httpGet(`http://127.0.0.1:${port}/api/feishu/register/status`);
+        const st = JSON.parse(raw) as { status: string; appId?: string; error?: string };
+        if (st.status === 'success') {
+          this._stopRegisterPolling();
+          this._postRegisterState({ status: 'success', appId: st.appId });
+        } else if (st.status === 'error' || st.status === 'idle') {
+          this._stopRegisterPolling();
+          this._postRegisterState({ status: 'error', error: st.error || 'failed' });
+        }
+      } catch {
+        // server 暂时不可达：下一轮再试
+      }
+    }, 2000);
+  }
+
+  private _stopRegisterPolling() {
+    if (this._registerPollTimer) {
+      clearInterval(this._registerPollTimer);
+      this._registerPollTimer = null;
+    }
+  }
+
+  /** 找任意一个可达的 MCP server 端口（优先当前活跃端口，避免全端口扫描） */
+  private async _findAnyServerPort(): Promise<number | null> {
+    const alive = async (port: number): Promise<boolean> => {
+      try {
+        const raw = await this._httpGet(`http://127.0.0.1:${port}/api/health`);
+        return JSON.parse(raw).status === 'ok';
+      } catch {
+        return false;
+      }
+    };
+    const preferred = [this._activePort, this._currentRequestPort, ...(this._debugInfo.connectedPorts || [])]
+      .filter((p): p is number => typeof p === 'number');
+    for (const p of preferred) {
+      if (await alive(p)) return p;
+    }
+    const ports: number[] = [];
+    for (let i = 0; i < this._portScanRange; i++) {
+      const p = this._basePort + i;
+      if (!preferred.includes(p)) ports.push(p);
+    }
+    const hits = await Promise.all(ports.map(async (p) => ((await alive(p)) ? p : null)));
+    return hits.find((p): p is number => p !== null) ?? null;
+  }
+
+  /** 打开外部链接（webview 内点「打开链接」时用；仅放行 http/https） */
+  private _handleOpenLink(url?: string) {
+    if (!url || !/^https?:\/\//i.test(url)) return;
+    vscode.env.openExternal(vscode.Uri.parse(url));
   }
 
   /**
@@ -1272,7 +1503,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   /**
    * HTTP POST 请求
    */
-  private _httpPost(url: string, body: string): Promise<string> {
+  private _httpPost(url: string, body: string, timeoutMs = 5000): Promise<string> {
     return new Promise((resolve, reject) => {
       const urlObj = new URL(url);
       const options = {
@@ -1284,7 +1515,7 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body)
         },
-        timeout: 5000
+        timeout: timeoutMs
       };
 
       const req = http.request(options, (res) => {

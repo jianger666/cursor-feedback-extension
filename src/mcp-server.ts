@@ -44,6 +44,16 @@ function debugLog(message: string) {
   console.error(`[${timestamp}] ${message}`);
 }
 
+// 包版本真相源：package.json（dist/mcp-server.js 的上一级目录）。读不到时兜底 0.0.0。
+const PKG_VERSION: string = (() => {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
+    return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
+
 /**
  * 反馈请求接口
  */
@@ -154,22 +164,29 @@ class McpFeedbackServer {
   /** 面板在超时空窗内提交的反馈：暂存到下一轮 pending 注册时立即兑现 */
   private panelStash: { feedback: FeedbackResponse; projectDir: string; at: number } | null = null;
   /**
-   * 忙时消息队列：AI 正在干活（该项目空间没有等待中的反馈请求）时用户发来的飞书消息
+   * 忙时消息队列：AI 正在干活（该项目空间没有等待中的反馈请求）时用户发来的消息
    * 不再丢弃，而是按项目空间排队；等 AI 下一轮调 interactive_feedback 时合并送达，
-   * 并附「任务期间追加」提示头。开关见 FeishuBridge.queueWhenBusy（面板 / FEISHU_QUEUE）。
+   * 并附「任务期间追加」提示头。飞书与面板消息共用同一个队列（按到达顺序），
+   * 飞书侧开关见 FeishuBridge.queueWhenBusy（面板 / FEISHU_QUEUE）；面板排队恒可用。
    */
   private queuedInbound: Array<{
+    /** 队列项唯一 id：面板撤回按 id 定位（at 时间戳理论上可能撞车，不能当主键） */
+    id: string;
     text: string;
     chatId: string;
     images: FeedbackResponse['images'];
     files: string[];
     at: number;
     messageId: string;
+    /** 消息来源渠道：飞书消息有回执链路（表情/引用回复），面板消息靠轮询下发的队列列表反馈状态 */
+    source: 'feishu' | 'panel';
     /** 归属项目空间：只被该项目的下一轮反馈请求消费 */
     forProjectDir: string;
-    /** 过期定时器：到点仍未被读取则回执用户「未送达」并出队 */
+    /** 过期定时器：到点仍未被读取则出队（飞书消息回执用户「未送达」，面板消息从列表消失） */
     expiryTimer: ReturnType<typeof setTimeout>;
   }> = [];
+  /** 队列项 id 自增序号（配合时间戳保证进程内唯一） */
+  private queueSeq = 0;
   /** 队列消息未被读取的兜底时长：超过视为对话已结束，回执用户避免静默丢失 */
   private static readonly QUEUE_TTL_MS = 60 * 60 * 1000;
   /** 队列长度上限：极端情况下防止无限堆积 */
@@ -230,7 +247,7 @@ class McpFeedbackServer {
     this.server = new Server(
       {
         name: 'cursor-feedback-server',
-        version: '0.0.1',
+        version: PKG_VERSION,
       },
       {
         capabilities: {
@@ -1120,13 +1137,55 @@ class McpFeedbackServer {
     return false;
   }
 
-  /** 队列里是否有属于某项目空间的排队消息 */
+  /** 队列里是否有属于某项目空间的排队消息（不看渠道开关：面板消息不受飞书队列开关约束） */
   private hasQueuedFor(projectDir: string): boolean {
-    if (!this.feishu.isQueueWhenBusy()) return false;
     const owner = this.normalizePath(projectDir);
     return this.queuedInbound.some((q) =>
       this.pathsRelated(this.normalizePath(q.forProjectDir), owner),
     );
+  }
+
+  /** 某项目空间的排队消息快照（随 /api/feedback/current 下发给面板展示队列列表） */
+  private queuedSnapshotFor(normalizedWs: string): Array<{
+    id: string;
+    at: number;
+    source: 'feishu' | 'panel';
+    text: string;
+    images: number;
+    files: number;
+  }> {
+    if (!normalizedWs) return [];
+    return this.queuedInbound
+      .filter((q) => this.pathsRelated(this.normalizePath(q.forProjectDir), normalizedWs))
+      .map((q) => ({
+        id: q.id,
+        at: q.at,
+        source: q.source,
+        text: q.text,
+        images: q.images.length,
+        files: q.files.length,
+      }));
+  }
+
+  /**
+   * 撤回一条排队消息（面板队列列表的小叉触发）。
+   * 飞书来源的消息同步回执「已撤回」，两边状态一致；面板消息撤掉后列表随轮询消失即回执。
+   * 返回 false = 没找到（可能已被消费或过期），面板下一秒轮询自然对齐，无需特殊处理。
+   */
+  private removeQueuedById(id: string): boolean {
+    const idx = this.queuedInbound.findIndex((q) => q.id === id);
+    if (idx < 0) return false;
+    const [item] = this.queuedInbound.splice(idx, 1);
+    clearTimeout(item.expiryTimer);
+    debugLog(`Queued message recalled (id=${id}, source=${item.source}, queueSize=${this.queuedInbound.length})`);
+    if (item.source === 'feishu') {
+      this.feishu.replyToMessage(
+        item.messageId || undefined,
+        item.chatId,
+        '🗑️ 这条排队消息已在插件面板被撤回，不会送达 AI。',
+      );
+    }
+    return true;
   }
 
   /**
@@ -1161,6 +1220,8 @@ class McpFeedbackServer {
   /**
    * 消息入队 + 回执用户「已排队」。每条消息带 60 分钟过期兜底：
    * 到点仍未被 AI 读取（对话可能已结束）→ 引用回复告知未送达，绝不静默丢弃。
+   * 飞书与面板消息共用同一个队列（严格按到达顺序），但回执链路分渠道：
+   * 飞书走引用回复/表情，面板消息没有推送通道，靠轮询下发的队列列表反映在/不在。
    */
   private enqueueInbound(
     text: string,
@@ -1169,25 +1230,30 @@ class McpFeedbackServer {
     files: string[],
     messageId: string,
     forProjectDir: string,
+    source: 'feishu' | 'panel' = 'feishu',
   ): void {
     // 上限保护：挤出最老的一条并告知未送达
     while (this.queuedInbound.length >= McpFeedbackServer.QUEUE_MAX) {
       const dropped = this.queuedInbound.shift();
       if (!dropped) break;
       clearTimeout(dropped.expiryTimer);
-      this.feishu.replyToMessage(
-        dropped.messageId || undefined,
-        dropped.chatId,
-        '⚠️ 排队消息过多，这条消息已被挤出队列、未送达 AI，请稍后重发。',
-      );
+      if (dropped.source === 'feishu') {
+        this.feishu.replyToMessage(
+          dropped.messageId || undefined,
+          dropped.chatId,
+          '⚠️ 排队消息过多，这条消息已被挤出队列、未送达 AI，请稍后重发。',
+        );
+      }
     }
     const item = {
+      id: `q${Date.now()}_${++this.queueSeq}`,
       text,
       chatId,
       images,
       files,
       at: Date.now(),
       messageId,
+      source,
       forProjectDir,
       expiryTimer: undefined as unknown as ReturnType<typeof setTimeout>,
     };
@@ -1195,22 +1261,26 @@ class McpFeedbackServer {
       const idx = this.queuedInbound.indexOf(item);
       if (idx < 0) return; // 已被消费
       this.queuedInbound.splice(idx, 1);
-      this.feishu.replyToMessage(
-        item.messageId || undefined,
-        item.chatId,
-        '⚠️ 这条排队消息等了 60 分钟仍未被 AI 读取（对话可能已结束），未能送达。需要的话请在 AI 下次询问时重发。',
-      );
+      if (item.source === 'feishu') {
+        this.feishu.replyToMessage(
+          item.messageId || undefined,
+          item.chatId,
+          '⚠️ 这条排队消息等了 60 分钟仍未被 AI 读取（对话可能已结束），未能送达。需要的话请在 AI 下次询问时重发。',
+        );
+      }
     }, McpFeedbackServer.QUEUE_TTL_MS);
     item.expiryTimer.unref?.();
     this.queuedInbound.push(item);
     debugLog(
-      `Inbound queued for busy AI (project=${forProjectDir}, queueSize=${this.queuedInbound.length})`,
+      `Inbound queued for busy AI (source=${source}, project=${forProjectDir}, queueSize=${this.queuedInbound.length})`,
     );
-    this.feishu.replyToMessage(
-      messageId || undefined,
-      chatId,
-      `🤖 AI 正在工作中，这条消息已排队，将在「${this.projectName(forProjectDir)}」当前任务完成后自动读取。`,
-    );
+    if (source === 'feishu') {
+      this.feishu.replyToMessage(
+        messageId || undefined,
+        chatId,
+        `🤖 AI 正在工作中，这条消息已排队，将在「${this.projectName(forProjectDir)}」当前任务完成后自动读取。`,
+      );
+    }
   }
 
   /**
@@ -1241,7 +1311,8 @@ class McpFeedbackServer {
     const text =
       '[QUEUED_MESSAGES] 以下是用户在你执行上一轮任务期间「追加」发送的消息（当时你正忙，消息已排队暂存）。' +
       '注意：这些内容不是对你最新一轮工作摘要的回复，请结合任务上下文阅读并处理；' +
-      '如与你摘要中的询问冲突，以用户追加内容为准。处理完后照常调用 interactive_feedback 继续对话。\n\n' +
+      '如与你摘要中的询问冲突，以用户追加内容为准。本次的 summary 用户并没有收到，如有必要可在下次带上。' +
+      '处理完后照常调用 interactive_feedback 继续对话。\n\n' +
       `=== 追加消息（${matched.length} 条）===\n` +
       lines.join('\n\n');
 
@@ -1257,9 +1328,12 @@ class McpFeedbackServer {
     this.feishu.clearPending(requestId);
     // 标记为「飞书渠道 resolve」：插件面板据此重置，避免对着已消失的请求提交
     this.lastFeishuResolved = { id: requestId, at: Date.now() };
-    // 送达回执：给每条排队消息补 ✅ 表情
+    // 送达回执：给每条飞书排队消息补 ✅ 表情（面板消息没有回执通道，
+    // 其送达状态由轮询下发的队列列表体现——消费后列表随即清空）
     for (const m of matched) {
-      this.feishu.reactDone(m.messageId || undefined, m.chatId);
+      if (m.source === 'feishu') {
+        this.feishu.reactDone(m.messageId || undefined, m.chatId);
+      }
     }
   }
 
@@ -1549,7 +1623,69 @@ class McpFeedbackServer {
             feishu: this.feishu.getStatus(),
             feishuResolvedId: (this.lastFeishuResolved && Date.now() - this.lastFeishuResolved.at < 30000) ? this.lastFeishuResolved.id : null,
             pause: this.getPauseStateFor(chosen?.id),
+            // 该窗口的忙时排队消息快照（飞书 + 面板同队列），供面板展示队列列表
+            queued: this.queuedSnapshotFor(pollWs),
           }));
+          return;
+        }
+
+        // 面板忙时排队：AI 正忙（该项目无等待中的请求）时，把面板消息排进忙时队列，
+        // 与飞书消息共用同一队列（按到达顺序），下一轮 interactive_feedback 合并送达
+        if (req.method === 'POST' && req.url === '/api/feedback/enqueue') {
+          let body = '';
+          req.on('data', (chunk) => { body += chunk.toString(); });
+          req.on('end', () => {
+            try {
+              const { text, images, attachedFiles, projectDir } = JSON.parse(body) as {
+                text: string;
+                images?: FeedbackResponse['images'];
+                attachedFiles?: string[];
+                projectDir?: string;
+              };
+              if (!projectDir) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ queued: false, reason: 'projectDir required' }));
+                return;
+              }
+              // 忙时排队是全局开关（面板 UI 已隐藏排队入口，这里兜底防竞态）
+              if (!this.feishu.isQueueWhenBusy()) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ queued: false, reason: 'disabled' }));
+                return;
+              }
+              // 该项目有等待中的请求 → 不该排队，面板应直接提交（正常轮询下一秒就会显示该请求）
+              if (this.hasPendingForProject(projectDir)) {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ queued: false, reason: 'pending' }));
+                return;
+              }
+              this.enqueueInbound(text || '', '', images || [], attachedFiles || [], '', projectDir, 'panel');
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ queued: true }));
+            } catch {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ queued: false, reason: 'invalid body' }));
+            }
+          });
+          return;
+        }
+
+        // 撤回排队消息：面板队列列表的删除按钮触发，按队列项 id 定位。
+        // 飞书来源的消息由 removeQueuedById 同步回执，保证两边状态一致
+        if (req.method === 'POST' && req.url === '/api/feedback/queue/remove') {
+          let body = '';
+          req.on('data', (chunk) => { body += chunk.toString(); });
+          req.on('end', () => {
+            try {
+              const { id } = JSON.parse(body) as { id?: string };
+              const removed = !!id && this.removeQueuedById(id);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ removed }));
+            } catch {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ removed: false }));
+            }
+          });
           return;
         }
 
@@ -1601,6 +1737,33 @@ class McpFeedbackServer {
         }
 
         // 配置飞书（来自插件 UI；凭证未变只补 chatId，变了则重建长连接）
+        // 扫码一键创建飞书应用：启动 Device Grant 流程并返回待扫码链接（等二维码就绪才响应）
+        if (req.method === 'POST' && req.url === '/api/feishu/register/start') {
+          this.feishu.startRegister().then((state) => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(state));
+          }).catch(() => {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'error', error: 'internal' }));
+          });
+          return;
+        }
+
+        // 扫码创建流程状态（插件轮询直到 success / error）
+        if (req.method === 'GET' && req.url === '/api/feishu/register/status') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(this.feishu.getRegisterState()));
+          return;
+        }
+
+        // 取消进行中的扫码创建流程（用户关闭设置弹窗）
+        if (req.method === 'POST' && req.url === '/api/feishu/register/cancel') {
+          this.feishu.cancelRegister();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+          return;
+        }
+
         if (req.method === 'POST' && req.url === '/api/feishu/config') {
           let body = '';
           req.on('data', (chunk) => { body += chunk.toString(); });
@@ -1823,7 +1986,7 @@ class McpFeedbackServer {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ 
             status: 'ok', 
-            version: '0.0.1',
+            version: PKG_VERSION,
             hasCurrentRequest: this.currentRequest !== null,
             pid: process.pid,
           }));
