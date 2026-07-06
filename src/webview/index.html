@@ -210,7 +210,18 @@
         <p class="feishu-modal__desc">{{i18n.queueWhenBusyDesc}}</p>
       </div>
 
-      <!-- 区块③：飞书通知（推送开关 + 凭证 + 绑定状态） -->
+      <!-- 区块③：常驻服务（IDE 关闭时仍保持飞书链路 + /new 拉起 CLI；接电自动防睡眠） -->
+      <div class="feishu-section">
+        <label class="feishu-switch">
+          <span class="feishu-switch__label feishu-switch__label--strong">{{i18n.daemonLabel}}</span>
+          <input id="daemonToggle" type="checkbox" class="feishu-switch__input">
+          <span class="feishu-switch__track"><span class="feishu-switch__thumb"></span></span>
+        </label>
+        <p class="feishu-modal__desc">{{i18n.daemonDesc}}</p>
+        <p id="daemonStatusText" class="feishu-modal__desc feishu-modal__desc--sub"></p>
+      </div>
+
+      <!-- 区块④：飞书通知（推送开关 + 凭证 + 绑定状态） -->
       <div class="feishu-section">
         <label class="feishu-switch">
           <span class="feishu-switch__label feishu-switch__label--strong">{{i18n.feishuSettings}}</span>

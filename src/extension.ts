@@ -342,6 +342,12 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         case 'toggleFeishuQueue':
           await this._handleToggleFeishuQueue(!!data.payload?.enabled);
           break;
+        case 'requestDaemonStatus':
+          await this._handleRequestDaemonStatus();
+          break;
+        case 'toggleDaemon':
+          await this._handleToggleDaemon(!!data.payload?.enabled);
+          break;
         case 'feishuRegisterStart':
           await this._handleFeishuRegisterStart();
           break;
@@ -1480,6 +1486,64 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     await this._memento?.update('feishuQueue', enabled);
     this._broadcastFeishuConfig();
     this._postFeishuState();
+  }
+
+  /** 找一个活跃的 server 端口（常驻服务安装/状态查询走任一进程均可，磁盘配置全局共享） */
+  private _anyServerPort(): number | null {
+    if (this._activePort) return this._activePort;
+    const ports = this._debugInfo.connectedPorts || [];
+    return ports.length > 0 ? ports[0] : null;
+  }
+
+  /** 查询常驻服务状态并回显到设置面板 */
+  private async _handleRequestDaemonStatus() {
+    const port = this._anyServerPort();
+    if (!port) {
+      this._view?.webview.postMessage({
+        type: 'daemonState',
+        payload: { supported: false, installed: false, error: 'no server' },
+      });
+      return;
+    }
+    try {
+      const raw = await this._httpGet(`http://127.0.0.1:${port}/api/daemon/status`);
+      this._view?.webview.postMessage({ type: 'daemonState', payload: JSON.parse(raw) });
+    } catch (e) {
+      this._view?.webview.postMessage({
+        type: 'daemonState',
+        payload: { supported: true, installed: false, error: String(e) },
+      });
+    }
+  }
+
+  /** 安装/卸载常驻服务（server 端执行：拷贝自身 + 注册开机自启），完成后回显状态 */
+  private async _handleToggleDaemon(enabled: boolean) {
+    const port = this._anyServerPort();
+    if (!port) {
+      this._view?.webview.postMessage({
+        type: 'daemonState',
+        payload: { supported: true, installed: !enabled, error: 'no server' },
+      });
+      return;
+    }
+    try {
+      // 安装要拷贝整棵依赖树，超时放宽到 60s
+      const raw = await this._httpPost(
+        `http://127.0.0.1:${port}/api/daemon/${enabled ? 'install' : 'uninstall'}`,
+        '{}',
+        60000,
+      );
+      const parsed = JSON.parse(raw);
+      this._view?.webview.postMessage({
+        type: 'daemonState',
+        payload: parsed.error ? { supported: true, installed: !enabled, error: parsed.error } : parsed,
+      });
+    } catch (e) {
+      this._view?.webview.postMessage({
+        type: 'daemonState',
+        payload: { supported: true, installed: !enabled, error: String(e) },
+      });
+    }
   }
 
   /**

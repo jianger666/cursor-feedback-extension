@@ -78,6 +78,12 @@ export type I18nMessages = {
   feishuAckDesc: string;
   queueWhenBusyLabel: string;
   queueWhenBusyDesc: string;
+  daemonLabel: string;
+  daemonDesc: string;
+  daemonInstalled: string;
+  daemonNotSupported: string;
+  daemonFailed: string;
+  daemonWorking: string;
   queueSend: string;
   queuedTitle: string;
   queueModeHint: string;
@@ -253,6 +259,12 @@ function getDefaultMessages(): I18nMessages {
     feishuAckDesc: "After you reply in Feishu, the bot adds a Get emoji as acknowledgement.",
     queueWhenBusyLabel: "Queue messages while AI is busy",
     queueWhenBusyDesc: "While the AI is busy, messages from the panel and Feishu are queued and auto-delivered in order on its next feedback round, marked as appended during the task.",
+    daemonLabel: "Background service (works without IDE)",
+    daemonDesc: "Auto-start a standalone Feishu bridge at login: receive messages and launch CLI sessions with /new even when Cursor is closed. Keeps the machine awake while plugged in.",
+    daemonInstalled: "Installed v{version}",
+    daemonNotSupported: "Not supported on this platform",
+    daemonFailed: "Operation failed: {error}",
+    daemonWorking: "Working…",
     queueSend: "Queue Message",
     queuedTitle: "Queued messages",
     queueModeHint: "AI is busy — messages sent now are queued and delivered when it next asks for feedback",

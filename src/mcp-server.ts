@@ -28,6 +28,9 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 import { FeishuBridge, FeishuConfig, FeishuInboundReply } from './feishu.js';
+import { CliLauncher, CliSessionResult } from './cli-launcher.js';
+import { KeepAwake } from './keep-awake.js';
+import { installDaemon, uninstallDaemon, daemonStatus, daemonSupported } from './daemon-install.js';
 
 // ⚠️ MCP stdio 协议要求 stdout 只承载 JSON-RPC 消息。第三方库（尤其飞书 SDK 的内置 logger，
 // 输出形如 "[info]: [...]"）会用 console.log/info/debug 往 stdout 打日志，一旦混入就会让
@@ -136,6 +139,8 @@ class McpFeedbackServer {
   // 飞书桥接（可选；未配置时不加载 SDK、零开销）
   private feishu = new FeishuBridge();
   private feishuRoutingSetup = false;
+  // 飞书 /new 命令拉起的 headless CLI 会话（同一实例同时最多一个）
+  private cliLauncher = new CliLauncher();
   /**
    * 抢跑暂存：用户在「上一轮反馈刚结束、下一轮卡片还没注册」的空窗里直接发来的「无主」消息。
    * 暂存后等下一轮 pending 一注册立即兑现，避免回复石沉大海（修复用户反馈的竞态 bug）。
@@ -244,9 +249,16 @@ class McpFeedbackServer {
   // 无标志位会无限递归直至 "Maximum call stack size exceeded"（日志曾刷出数万条 Stopping server...）
   private stopping: boolean = false;
 
-  constructor(port: number = 8766) {
+  // 守护模式（--daemon）：无 stdio 客户端的常驻实例，只承担飞书链路 + /new 拉起 CLI。
+  // 与 IDE 拉起的实例并存于同一端口扫描段，消息经既有跨实例路由互通。
+  private readonly daemonMode: boolean;
+  // 防睡眠（守护模式启用；仅接电源时阻止系统睡眠）
+  private keepAwake = new KeepAwake();
+
+  constructor(port: number = 8766, daemonMode: boolean = false) {
     this.port = port;
     this.basePort = port;
+    this.daemonMode = daemonMode;
     
     this.server = new Server(
       {
@@ -502,6 +514,9 @@ class McpFeedbackServer {
       // 文本、图片、文件任一非空都算有效反馈（此前只认文本，导致纯图片/文件被丢弃）
       if (!text && images.length === 0 && files.length === 0) return;
 
+      // 斜杠命令优先于反馈路由：用户显式输入命令时不应被当成对某张卡片的回复或排队消息。
+      if (/^\/(new|stop|model|cwd)\b/.test(text) && this.handleCliCommand(text, chatId)) return;
+
       if (parentId) {
         // 用户「回复」了某条卡片 → 用 parent_id 精确路由
         const reqId = this.feishu.resolveParent(parentId);
@@ -576,6 +591,150 @@ class McpFeedbackServer {
         );
       }
     });
+  }
+
+  /** 展开命令里的目录写法（支持 ~ 前缀和 Windows 盘符路径），非法/不存在返回 null */
+  private expandDirToken(token: string): string | null {
+    if (!token) return null;
+    const looksLikePath =
+      token.startsWith('/') || token.startsWith('~') || /^[a-zA-Z]:[\\/]/.test(token);
+    if (!looksLikePath) return null;
+    const expanded = token.startsWith('~')
+      ? path.join(os.homedir(), token.slice(1))
+      : token;
+    try {
+      if (fs.statSync(expanded).isDirectory()) return expanded;
+    } catch {
+      // 不存在
+    }
+    return null;
+  }
+
+  /**
+   * 处理飞书斜杠命令。返回是否已消费该消息。
+   * - /new [工作目录] 任务描述：拉起一个 headless CLI 会话（非交互 + maxMode=false，扣 1 次请求）
+   * - /stop：终止运行中的 CLI 会话
+   * - /model [模型id]：查看 / 设置 CLI 会话模型（持久化；无论选什么模型都强制 maxMode=false）
+   * - /cwd [目录]：查看 / 设置默认工作目录（持久化；IDE 不开时 /new 用它）
+   */
+  private handleCliCommand(text: string, chatId: string): boolean {
+    if (/^\/stop\b/.test(text)) {
+      if (this.cliLauncher.stop()) {
+        this.feishu.replyText(chatId, '🛑 正在终止 CLI 会话…结束后我会再发一条收尾消息。');
+      } else {
+        this.feishu.replyText(chatId, '当前没有运行中的 CLI 会话。');
+      }
+      return true;
+    }
+
+    const mModel = text.match(/^\/model(?:\s+(\S+))?\s*$/);
+    if (mModel) {
+      if (mModel[1]) {
+        this.cliLauncher.writeSettings({ model: mModel[1] });
+        this.feishu.replyText(
+          chatId,
+          `✅ CLI 模型已设为 ${mModel[1]}\n（无论什么模型，拉起前都会强制 maxMode=false，不会走 Max 计费）`,
+        );
+      } else {
+        this.feishu.replyText(
+          chatId,
+          `当前 CLI 模型：${this.cliLauncher.model()}\n设置：/model 模型id（例如 /model claude-fable-5-thinking-max）`,
+        );
+      }
+      return true;
+    }
+
+    const mCwd = text.match(/^\/cwd(?:\s+(\S+))?\s*$/);
+    if (mCwd) {
+      if (mCwd[1]) {
+        const dir = this.expandDirToken(mCwd[1]);
+        if (!dir) {
+          this.feishu.replyText(chatId, `❌ 目录不存在或不是有效路径：${mCwd[1]}`);
+        } else {
+          this.cliLauncher.writeSettings({ defaultCwd: dir });
+          this.feishu.replyText(chatId, `✅ 默认工作目录已设为 ${dir}\n之后 /new 不带路径时都用它。`);
+        }
+      } else {
+        const cur = this.cliLauncher.defaultCwd();
+        this.feishu.replyText(
+          chatId,
+          `当前默认工作目录：${cur || '（未设置，回退到活跃窗口工作区或主目录）'}\n设置：/cwd 绝对路径`,
+        );
+      }
+      return true;
+    }
+
+    const m = text.match(/^\/new\s*([\s\S]*)$/);
+    if (!m) return false;
+    let task = (m[1] || '').trim();
+
+    if (!task) {
+      this.feishu.replyText(
+        chatId,
+        '用法：/new 任务描述\n' +
+          '可选在任务前带一个已存在的目录作为工作目录：\n' +
+          '/new /Users/me/proj 帮我看下测试为什么挂了\n' +
+          '相关命令：/cwd 设默认目录、/model 设模型、/stop 终止会话。',
+      );
+      return true;
+    }
+
+    if (this.cliLauncher.isRunning()) {
+      this.feishu.replyText(
+        chatId,
+        '已有一个 CLI 会话在运行：' + this.cliLauncher.describe() + '\n发 /stop 可先终止它。',
+      );
+      return true;
+    }
+
+    // 工作目录优先级：命令里显式路径 > /cwd 持久化默认目录 > 本实例归属窗口 > 主目录。
+    // 注意 ownerWorkspace 是小写归一化路径，macOS 默认大小写不敏感文件系统下可直接使用。
+    let cwd =
+      this.cliLauncher.defaultCwd() ||
+      (this.ownerWorkspace && fs.existsSync(this.ownerWorkspace)
+        ? this.ownerWorkspace
+        : os.homedir());
+    const explicitDir = this.expandDirToken(task.split(/\s+/)[0]);
+    if (explicitDir) {
+      cwd = explicitDir;
+      task = task.slice(task.split(/\s+/)[0].length).trim();
+    }
+    if (!task) {
+      this.feishu.replyText(chatId, '只给了目录没给任务。用法：/new [工作目录] 任务描述');
+      return true;
+    }
+
+    const err = this.cliLauncher.start(task, cwd, (result) =>
+      this.onCliSessionDone(result, chatId),
+    );
+    if (err) {
+      this.feishu.replyText(chatId, '❌ 拉起 CLI 会话失败：' + err);
+    } else {
+      this.feishu.replyText(
+        chatId,
+        '🚀 CLI 会话已拉起（非交互模式，已强制 maxMode=false，按 1 次请求计费）\n' +
+          `模型：${this.cliLauncher.model()}\n` +
+          `工作目录：${cwd}\n` +
+          `任务：${task.length > 100 ? task.slice(0, 100) + '…' : task}\n\n` +
+          'AI 需要和你沟通时会发反馈卡片，直接回复卡片即可；发 /stop 可随时终止。',
+      );
+    }
+    return true;
+  }
+
+  /** CLI 会话结束的收尾回执：把 agent 的最终输出（尾部）发回飞书 */
+  private onCliSessionDone(result: CliSessionResult, chatId: string) {
+    const mins = Math.max(1, Math.round(result.elapsedMs / 60000));
+    let head: string;
+    if (result.stopped) head = '🛑 CLI 会话已按你的要求终止';
+    else if (result.timedOut) head = '⏱ CLI 会话超过时长上限，已被终止';
+    else if (result.code === 0) head = '✅ CLI 会话已完成';
+    else head = `⚠️ CLI 会话异常退出（code=${result.code}）`;
+
+    let body = result.output || result.errorOutput || '（无输出）';
+    // 飞书单条消息别太长：保留尾部（结论一般在最后）
+    if (body.length > 1800) body = '…' + body.slice(body.length - 1800);
+    this.feishu.replyText(chatId, `${head}（用时约 ${mins} 分钟）\n\n${body}`);
   }
 
   /** 当前生效的超时续期开关（优先 UI 开关 autoRetryOverride，未设置时回退环境变量/默认开启） */
@@ -1911,6 +2070,30 @@ class McpFeedbackServer {
           return;
         }
 
+        // 常驻守护：状态查询 / 安装 / 卸载（供插件面板「常驻服务」开关调用）
+        if (req.method === 'GET' && req.url === '/api/daemon/status') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ...daemonStatus(), currentVersion: PKG_VERSION }));
+          return;
+        }
+        if (req.method === 'POST' && (req.url === '/api/daemon/install' || req.url === '/api/daemon/uninstall')) {
+          const isInstall = req.url === '/api/daemon/install';
+          try {
+            if (isInstall && !daemonSupported()) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: `平台 ${process.platform} 暂不支持常驻守护` }));
+              return;
+            }
+            const status = isInstall ? installDaemon() : uninstallDaemon();
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: true, ...status, currentVersion: PKG_VERSION }));
+          } catch (e) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: String(e) }));
+          }
+          return;
+        }
+
         // 跨实例转发的飞书回复（由其他窗口的 server 广播过来）
         if (req.method === 'POST' && req.url === '/api/feishu/inbound') {
           let body = '';
@@ -2172,7 +2355,18 @@ class McpFeedbackServer {
       if (settings && typeof settings.autoRetry === 'boolean') {
         this.autoRetryOverride = settings.autoRetry;
       }
-      
+
+      if (this.daemonMode) {
+        // 守护模式：没有 stdio 客户端（launchd/计划任务拉起，stdin 是 /dev/null），
+        // 不连 MCP 传输、不装 stdin 退出钩子、不开看门狗（父进程本来就是 launchd）。
+        // 顺带启动防睡眠：锁屏后手机随时能唤起（仅接电源时生效，不偷耗电池）。
+        if (process.env.CURSOR_FEEDBACK_KEEP_AWAKE !== 'false') {
+          this.keepAwake.start();
+        }
+        debugLog(`Daemon mode started (v${PKG_VERSION}), Feishu bridge + /new launcher only`);
+        return;
+      }
+
       // 启动 MCP stdio 传输
       const transport = new StdioServerTransport();
       await this.server.connect(transport);
@@ -2271,6 +2465,9 @@ class McpFeedbackServer {
     this.stopping = true;
     debugLog('Stopping server...');
 
+    // 停止防睡眠（子进程退出，电源断言自动释放）
+    this.keepAwake.stop();
+
     // 关闭看门狗定时器
     if (this.watchdogTimer) {
       clearInterval(this.watchdogTimer);
@@ -2304,8 +2501,27 @@ class McpFeedbackServer {
 
 // 主函数
 async function main() {
+  // 子命令：常驻守护的安装 / 卸载 / 状态查询（供 npx cursor-feedback install-daemon 等直接使用）
+  const argv = process.argv.slice(2);
+  const sub = argv.find((a) => !a.startsWith('-'));
+  if (sub === 'install-daemon' || sub === 'uninstall-daemon' || sub === 'daemon-status') {
+    try {
+      const status =
+        sub === 'install-daemon' ? installDaemon()
+        : sub === 'uninstall-daemon' ? uninstallDaemon()
+        : daemonStatus();
+      // 子命令是给人看的，结果走 stdout（无 MCP 客户端，无 stdio 污染问题）
+      process.stdout.write(JSON.stringify(status, null, 2) + '\n');
+      process.exit(0);
+    } catch (e) {
+      process.stderr.write(String(e) + '\n');
+      process.exit(1);
+    }
+  }
+
+  const daemonMode = argv.includes('--daemon');
   const port = 61927;
-  const server = new McpFeedbackServer(port);
+  const server = new McpFeedbackServer(port, daemonMode);
   
   // 处理进程信号
   process.on('SIGINT', () => {
@@ -2320,26 +2536,30 @@ async function main() {
     process.exit(0);
   });
 
-  // 监听 stdin 关闭（Cursor 关闭时会触发）
-  process.stdin.on('close', () => {
-    debugLog('stdin closed, exiting...');
-    server.stop();
-    // 给 100ms 缓冲后强制退出
-    setTimeout(() => process.exit(0), 100);
-  });
+  // stdin 退出钩子仅用于「被 MCP 客户端拉起」的场景。守护模式下 stdin 是 /dev/null，
+  // 启动瞬间就会触发 close/end，装上这些钩子进程会立刻自杀。
+  if (!daemonMode) {
+    // 监听 stdin 关闭（Cursor 关闭时会触发）
+    process.stdin.on('close', () => {
+      debugLog('stdin closed, exiting...');
+      server.stop();
+      // 给 100ms 缓冲后强制退出
+      setTimeout(() => process.exit(0), 100);
+    });
 
-  process.stdin.on('end', () => {
-    debugLog('stdin ended, exiting...');
-    server.stop();
-    setTimeout(() => process.exit(0), 100);
-  });
+    process.stdin.on('end', () => {
+      debugLog('stdin ended, exiting...');
+      server.stop();
+      setTimeout(() => process.exit(0), 100);
+    });
 
-  // stdin 出错（父进程经 npx 中间层异常断开时可能触发）同样退出，避免残留
-  process.stdin.on('error', (error) => {
-    debugLog(`stdin error, exiting: ${error}`);
-    server.stop();
-    setTimeout(() => process.exit(0), 100);
-  });
+    // stdin 出错（父进程经 npx 中间层异常断开时可能触发）同样退出，避免残留
+    process.stdin.on('error', (error) => {
+      debugLog(`stdin error, exiting: ${error}`);
+      server.stop();
+      setTimeout(() => process.exit(0), 100);
+    });
+  }
 
   // 捕获未处理的异常：记录日志后退出。
   // ⚠️ 绝不能“吞掉异常继续运行”——否则 stdin 在父进程断开后产生的反复错误会形成

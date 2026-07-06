@@ -27,6 +27,8 @@ If you're on Cursor's 500 requests/month plan or another coding plan, every conv
 - 📝 **Markdown Rendering** - Full Markdown support for AI summaries
 - ⏱️ **Auto-retry on Timeout** - 5-minute default timeout, AI automatically re-requests
 - 🔔 **Feishu (Lark) Bridge** - When AI requests feedback, the summary is pushed to Feishu so you can reply right from your phone
+- 📱 **Launch sessions from your phone** - Send `/new task` in Feishu to spawn a Cursor CLI session, no computer access needed
+- 🌙 **Background service** - Optional login daemon: Feishu keeps working with Cursor closed, auto keep-awake on AC power
 - 🌍 **Multi-language** - Supports English, Simplified Chinese, Traditional Chinese
 - 🔒 **Project Isolation** - Multiple windows work independently
 
@@ -259,6 +261,35 @@ Three steps to enable the round-trip:
 3. **Round-trip** — the agent calls `interactive_feedback` → a card is pushed to Feishu → you reply in Feishu → your reply is routed back to the agent as the tool result. Reply from your phone; no IDE needed.
 
 > **No idle-kill outside Cursor.** Only the Cursor extension keeps the server warm by polling. On every other host the server stays alive purely on the stdio connection: it exits on stdin EOF or parent-process death, and **never** on idle — and it always stays up while a feedback request is still waiting. So a reply that takes several minutes still makes it back.
+
+### Launch CLI sessions from Feishu (/new)
+
+Start a brand-new AI session from your phone, away from the computer. Prerequisite: [Cursor CLI](https://cursor.com/cli) (`cursor-agent`) installed and logged in on the machine.
+
+Send these directly in the bot chat:
+
+| Command | What it does |
+|---------|--------------|
+| `/new task description` | Launch a headless CLI session for the task (in the active window's workspace, or the `/cwd` default) |
+| `/new /abs/path task description` | Launch with an explicit working directory |
+| `/stop` | Terminate the running CLI session |
+| `/model [modelId]` | Show / set the session model (persisted) |
+| `/cwd [dir]` | Show / set the default working directory (persisted) |
+
+- Sessions run in **non-interactive mode** with `maxMode=false` force-written before spawn — on request-based plans each session costs exactly 1 request, never Max billing.
+- The launched agent talks to you through this extension's feedback cards: confirmations and progress reports are pushed to Feishu; just reply to the cards.
+- Put custom rules in `~/.cursor-feedback/cli-rules.md` (e.g. "always reply in Chinese"); they are injected into every `/new` session.
+- When a session ends (done / error / `/stop` / 3-hour cap), a wrap-up message with the final output is sent to Feishu.
+
+### Background service (works without the IDE)
+
+Normally the server process is spawned by Cursor, so closing Cursor drops the Feishu link. Enable the **background service** and a standalone daemon auto-starts at login — messages and `/new` work whether Cursor is open or not:
+
+- **Enable**: the "Background service" toggle in the extension's notification settings, or `npx cursor-feedback@latest install-daemon` (`uninstall-daemon` / `daemon-status` likewise).
+- **How**: the current package is copied to `~/.cursor-feedback/daemon/app` (self-contained, immune to npx cache cleanup); registered as a launchd agent on macOS (auto-restart on crash) or a logon scheduled task on Windows.
+- **Keep-awake**: while on AC power the daemon prevents system sleep (macOS `caffeinate -s`; Windows power assertion). On battery it does nothing. Lock screen never affects background processes.
+- **Typical use**: leave the machine plugged in and locked after work; `/new` from your phone anytime.
+- After upgrading the extension, toggle the switch off/on once to refresh the daemon's copy.
 
 ## 🏗️ Architecture
 

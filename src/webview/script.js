@@ -206,6 +206,8 @@
     fillFeishuInputs();
     feishuModal.classList.remove('hidden');
     feishuModal.setAttribute('aria-hidden', 'false');
+    // 打开设置时向 server 查一次常驻服务状态（安装与否、版本）
+    requestDaemonStatus();
     setTimeout(() => feishuAppIdInput.focus(), 0);
   }
   function closeFeishuModal() {
@@ -227,6 +229,34 @@
       closeFeishuModal();
     }
   });
+
+  // ---------- 常驻服务（IDE 关闭也可用）开关 ----------
+  const daemonToggle = document.getElementById('daemonToggle');
+  const daemonStatusText = document.getElementById('daemonStatusText');
+  function requestDaemonStatus() {
+    daemonToggle.disabled = true;
+    vscode.postMessage({ type: 'requestDaemonStatus' });
+  }
+  daemonToggle.addEventListener('change', () => {
+    // 安装/卸载是耗时操作（拷贝依赖 + 注册自启），期间锁住开关避免连点
+    daemonToggle.disabled = true;
+    daemonStatusText.textContent = i18n.daemonWorking || 'Working…';
+    vscode.postMessage({ type: 'toggleDaemon', payload: { enabled: daemonToggle.checked } });
+  });
+  function updateDaemonUI(s) {
+    if (!s) return;
+    daemonToggle.disabled = !s.supported;
+    daemonToggle.checked = !!s.installed;
+    let txt = '';
+    if (!s.supported) {
+      txt = i18n.daemonNotSupported || 'Not supported on this platform';
+    } else if (s.error) {
+      txt = (i18n.daemonFailed || 'Operation failed: {error}').replace('{error}', s.error);
+    } else if (s.installed) {
+      txt = (i18n.daemonInstalled || 'Installed v{version}').replace('{version}', s.installedVersion || '?');
+    }
+    daemonStatusText.textContent = txt;
+  }
 
   // ---------- 扫码一键创建飞书应用 ----------
   // 点「扫码快速创建」→ extension 向 server 发起 Device Grant 流程 → 面板展示二维码 →
@@ -1611,6 +1641,10 @@
 
       case 'feishuState':
         updateFeishuUI(message.payload);
+        break;
+
+      case 'daemonState':
+        updateDaemonUI(message.payload);
         break;
 
       case 'feishuRegisterState':
