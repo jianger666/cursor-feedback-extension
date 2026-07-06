@@ -39,6 +39,14 @@ async function main() {
     path.join(tmpHome, '.cursor', 'cli-config.json'),
     JSON.stringify({ maxMode: true, model: { modelId: 'x', maxMode: true }, keepMe: 42 }),
   );
+  // 预置：mcp.json 里混着 boolean/number env（实测会让 CLI 静默忽略整个文件）
+  fs.writeFileSync(
+    path.join(tmpHome, '.cursor', 'mcp.json'),
+    JSON.stringify({ mcpServers: { 'cursor-feedback': {
+      command: 'npx', args: ['-y', 'cursor-feedback@latest'],
+      env: { FEISHU_ENABLED: true, FEISHU_APP_ID: 'cli_x', RETRIES: 3 },
+    } } }),
+  );
   // 预置：用户自定义注入规则
   fs.mkdirSync(path.join(tmpHome, '.cursor-feedback'), { recursive: true });
   fs.writeFileSync(path.join(tmpHome, '.cursor-feedback', 'cli-rules.md'), '永远不要启动Subagent');
@@ -58,6 +66,7 @@ async function main() {
     check('非 stopped / 非 timedOut', !result.stopped && !result.timedOut);
     check('参数含 -p 非交互', result.output.includes('ARG::-p'));
     check('参数含 --trust', result.output.includes('ARG::--trust'));
+    check('参数含 --approve-mcps（headless 必须自动批准 MCP）', result.output.includes('ARG::--approve-mcps'));
     check('参数含 --model claude-fable-5-thinking-max',
       result.output.includes('ARG::claude-fable-5-thinking-max'));
     check('prompt 注入沟通协议', result.output.includes('interactive_feedback'));
@@ -69,6 +78,12 @@ async function main() {
     check('cli-config model.maxMode=false', cfg.model && cfg.model.maxMode === false);
     check('cli-config model.modelId 正确', cfg.model && cfg.model.modelId === 'claude-fable-5-thinking-max');
     check('cli-config 其他字段保留', cfg.keepMe === 42);
+
+    const mcp = JSON.parse(fs.readFileSync(path.join(tmpHome, '.cursor', 'mcp.json'), 'utf-8'));
+    const env = mcp.mcpServers['cursor-feedback'].env;
+    check('mcp.json boolean env 已归一化为字符串', env.FEISHU_ENABLED === 'true');
+    check('mcp.json number env 已归一化为字符串', env.RETRIES === '3');
+    check('mcp.json 原有字符串 env 不变', env.FEISHU_APP_ID === 'cli_x');
   }
 
   console.log('B. 并发拒绝 + /stop 终止');

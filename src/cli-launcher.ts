@@ -9,6 +9,10 @@
  *   交互式会话会把这个文件改回 max，不能信任上次的残留状态。
  * - CLI 不读 IDE 的全局 User Rules，用户的个人规则要显式注入到 prompt 里
  *   （从 ~/.cursor-feedback/cli-rules.md 读取，没有则只注入 cursor-feedback 沟通协议）。
+ * - 必须带 --approve-mcps：MCP 批准状态按工作目录落盘，headless 会话无法弹批准框，
+ *   不带这个 flag 时 cursor-feedback 工具根本不加载，agent 会卡死。
+ * - mcp.json 的 env 值必须全是字符串：出现 boolean/number 时 CLI 会静默忽略整个
+ *   mcp.json（IDE 却能容忍），spawn 前做一次归一化。
  * - 拉起的 agent 会通过全局注册的 cursor-feedback MCP 发飞书卡片，用户在手机上
  *   直接和这个会话对话——本模块只负责拉起和收尾，过程中的交互走既有反馈链路。
  */
@@ -290,6 +294,36 @@ export class CliLauncher {
   }
 
   /**
+   * spawn 前把 ~/.cursor/mcp.json 里的非字符串 env 值归一化为字符串。
+   * 实测（2026-07）：env 里出现 boolean/number（如 "FEISHU_ENABLED": true，IDE 能容忍）
+   * 会让 cursor-agent 校验失败并**静默忽略整个 mcp.json**——所有 MCP server 全部消失，
+   * headless 会话找不到 cursor-feedback 工具，卡死在「必须用它沟通」的指令上。
+   */
+  private normalizeMcpJsonEnv(): void {
+    try {
+      const p = path.join(os.homedir(), '.cursor', 'mcp.json');
+      const j = JSON.parse(fs.readFileSync(p, 'utf-8')) as {
+        mcpServers?: Record<string, { env?: Record<string, unknown> }>;
+      };
+      let changed = false;
+      for (const server of Object.values(j.mcpServers || {})) {
+        for (const [k, v] of Object.entries(server.env || {})) {
+          if (typeof v !== 'string') {
+            server.env![k] = String(v);
+            changed = true;
+          }
+        }
+      }
+      if (changed) {
+        fs.writeFileSync(p, JSON.stringify(j, null, 2));
+        clog('mcp.json 中的非字符串 env 已归一化为字符串（CLI 兼容性）');
+      }
+    } catch {
+      // mcp.json 不存在或损坏：不是本模块的职责，交给 cursor-agent 自己报错
+    }
+  }
+
+  /**
    * spawn 前强制写 cli-config.json：maxMode=false + 目标模型。
    * 每次都写——交互式会话会把它改回 max，残留状态不可信。
    */
@@ -359,6 +393,7 @@ export class CliLauncher {
       this.releaseLock();
       return '写入 cli-config.json 失败：' + e;
     }
+    this.normalizeMcpJsonEnv();
 
     const bin = this.findBinary();
     if (!bin) {
@@ -378,7 +413,10 @@ export class CliLauncher {
         : next;
     };
 
-    const args = ['-p', '--trust', '--model', this.model(), prompt];
+    // --approve-mcps 必带：headless 无法弹批准框，MCP 不批准就不加载，agent 会找不到
+    // cursor-feedback 工具而卡死。批准状态按工作目录存（~/.cursor/projects/<dir>/
+    // mcp-approvals.json），逐目录 enable 不现实，只有这个 flag 对任意 cwd 生效。
+    const args = ['-p', '--trust', '--approve-mcps', '--model', this.model(), prompt];
     const isWin = process.platform === 'win32';
     // Windows 上 .cmd/.ps1 不能直接 spawn（Node 18.20+ 禁止），需经 cmd.exe 转发
     const viaCmdShell = isWin && /\.(cmd|bat|ps1)$/i.test(bin);
