@@ -293,6 +293,7 @@ npm install -g cursor-feedback
 
 - **开启方式**：插件面板「通知设置」里打开「常驻服务」开关；或命令行 `npx cursor-feedback@latest install-daemon`（卸载对应 `uninstall-daemon`，状态 `daemon-status`）。
 - **实现**：把当前包完整拷贝到 `~/.cursor-feedback/daemon/app`（自包含，不怕 npx 缓存被清），macOS 注册 launchd（崩溃自动拉起），Windows 注册登录计划任务。
+- **自动升级**：守护拷贝不会「静默落后」——IDE 里的新版 server 启动时发现守护版本旧了，会静默重装并重启守护，无需手动操作。
 - **防睡眠**：守护进程在接电源时自动阻止系统睡眠（macOS `caffeinate -s`；Windows 电源断言），电池供电不生效、不偷耗电。锁屏本来就不影响后台进程。
 - **典型用法**：下班插着电源锁屏走人，手机飞书随时 `/new`。
 

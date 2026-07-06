@@ -30,7 +30,7 @@ import * as path from 'path';
 import { FeishuBridge, FeishuConfig, FeishuInboundReply } from './feishu.js';
 import { CliLauncher, CliSessionResult } from './cli-launcher.js';
 import { KeepAwake } from './keep-awake.js';
-import { installDaemon, uninstallDaemon, daemonStatus, daemonSupported } from './daemon-install.js';
+import { installDaemon, uninstallDaemon, daemonStatus, daemonSupported, upgradeDaemonIfOutdated } from './daemon-install.js';
 import { fileLog, readRecentLogs } from './logger.js';
 
 // ⚠️ MCP stdio 协议要求 stdout 只承载 JSON-RPC 消息。第三方库（尤其飞书 SDK 的内置 logger，
@@ -2515,6 +2515,17 @@ class McpFeedbackServer {
       
       debugLog('MCP Server started successfully');
       debugLog('Waiting for tool calls from AI agent...');
+
+      // 守护自动升级：本进程经 npx @latest 拉起、必然是最新版；发现已装守护版本落后
+      // 就静默重装（拷贝新包 + 重启守护），用户零操作。延后跑：整树拷贝要几秒，
+      // 不能挡 MCP 握手；失败也只记日志，旧守护继续工作。
+      setTimeout(() => {
+        try {
+          upgradeDaemonIfOutdated(PKG_VERSION);
+        } catch {
+          // upgradeDaemonIfOutdated 内部已兜错，这里纯保险
+        }
+      }, 5000);
     } catch (error) {
       debugLog(`Failed to start server: ${error}`);
       throw error;

@@ -141,6 +141,56 @@ async function main() {
     }
   }
 
+  console.log('C. upgradeDaemonIfOutdated：版本落后自动重装 / 同版跳过 / 并发锁');
+  {
+    const emptyBin = path.join(tmpHome, 'empty-bin');
+    const run = (expr) =>
+      execFileSync(process.execPath, ['-e', expr], {
+        env: { HOME: tmpHome, PATH: emptyBin },
+        cwd: repoRoot,
+        encoding: 'utf-8',
+      });
+    const upgrade = (ver) =>
+      JSON.parse(run(
+        `const d = require('${repoRoot}/dist/daemon-install.js');` +
+        `process.stdout.write(JSON.stringify({ did: d.upgradeDaemonIfOutdated('${ver}'), st: d.daemonStatus() }));`,
+      ));
+
+    const pkgVersion = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf-8')).version;
+    const appPkg = path.join(tmpHome, '.cursor-feedback', 'daemon', 'app', 'package.json');
+
+    // 未安装 → 不动
+    const r0 = upgrade(pkgVersion);
+    check('未安装守护时跳过', r0.did === false);
+
+    // 安装后伪造旧版本 → 自动重装并覆盖为当前版
+    run(`require('${repoRoot}/dist/daemon-install.js').installDaemon();`);
+    const pkg = JSON.parse(fs.readFileSync(appPkg, 'utf-8'));
+    pkg.version = '0.0.1';
+    fs.writeFileSync(appPkg, JSON.stringify(pkg));
+    const r1 = upgrade(pkgVersion);
+    check('版本落后时执行重装', r1.did === true);
+    check('重装后守护版本等于当前版', r1.st.installedVersion === pkgVersion);
+
+    // 同版本 → 跳过
+    const r2 = upgrade(pkgVersion);
+    check('同版本时跳过', r2.did === false);
+
+    // 新鲜的并发锁存在 → 跳过；过期残锁（>10 分钟）→ 照常升级
+    fs.writeFileSync(appPkg, JSON.stringify({ ...pkg, version: '0.0.2' }));
+    const lock = path.join(tmpHome, '.cursor-feedback', 'daemon', 'upgrade.lock');
+    fs.writeFileSync(lock, '12345');
+    const r3 = upgrade(pkgVersion);
+    check('并发锁存在时跳过', r3.did === false);
+    const old = new Date(Date.now() - 11 * 60 * 1000);
+    fs.utimesSync(lock, old, old);
+    const r4 = upgrade(pkgVersion);
+    check('过期残锁被清理后照常升级', r4.did === true && r4.st.installedVersion === pkgVersion);
+    check('升级完成后锁已释放', !fs.existsSync(lock));
+
+    run(`require('${repoRoot}/dist/daemon-install.js').uninstallDaemon();`);
+  }
+
   fs.rmSync(tmpHome, { recursive: true, force: true });
   if (failed > 0) {
     console.error(`\n${failed} 项断言失败`);

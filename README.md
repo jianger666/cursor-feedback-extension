@@ -289,6 +289,7 @@ Normally the server process is spawned by Cursor, so closing Cursor drops the Fe
 
 - **Enable**: the "Background service" toggle in the extension's notification settings, or `npx cursor-feedback@latest install-daemon` (`uninstall-daemon` / `daemon-status` likewise).
 - **How**: the current package is copied to `~/.cursor-feedback/daemon/app` (self-contained, immune to npx cache cleanup); registered as a launchd agent on macOS (auto-restart on crash) or a logon scheduled task on Windows.
+- **Auto-upgrade**: the daemon copy never goes stale — whenever a newer server starts inside the IDE and sees the installed daemon is outdated, it silently reinstalls and restarts it.
 - **Keep-awake**: while on AC power the daemon prevents system sleep (macOS `caffeinate -s`; Windows power assertion). On battery it does nothing. Lock screen never affects background processes.
 - **Typical use**: leave the machine plugged in and locked after work; `/new` from your phone anytime.
 

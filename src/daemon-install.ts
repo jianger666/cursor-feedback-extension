@@ -16,12 +16,14 @@ import { execFileSync, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { fileLog } from './logger.js';
 
 const LABEL = 'com.jianger666.cursor-feedback.daemon';
 const WIN_TASK_NAME = 'CursorFeedbackDaemon';
 
 function dlog(message: string) {
   console.error(`[${new Date().toISOString()}] [daemon-install] ${message}`);
+  fileLog('daemon-install', message);
 }
 
 export interface DaemonStatus {
@@ -272,6 +274,51 @@ function winTaskExists(): boolean {
     execFileSync('schtasks', ['/Query', '/TN', WIN_TASK_NAME], { stdio: 'ignore' });
     return true;
   } catch {
+    return false;
+  }
+}
+
+/**
+ * 守护自动升级：已安装的守护是安装时的快照，不会随 npx @latest 走。
+ * IDE 里的新版 server 启动时调用这里——发现守护版本与自己不一致就静默重装
+ * （重装会 bootout 旧守护、拷贝新包、重新拉起），用户零操作。
+ *
+ * 并发防护：多窗口 = 多个 server 同时启动，重装涉及删目录 + 整树拷贝，撞上会互相
+ * 写坏。用 wx 独占锁串行化，抢不到的直接跳过（反正有人在装）；残锁超 10 分钟视为
+ * 上次进程死在半路，清掉重来。
+ *
+ * @returns 是否真的执行了重装
+ */
+export function upgradeDaemonIfOutdated(currentVersion: string): boolean {
+  try {
+    const st = daemonStatus();
+    if (!st.installed || !st.installedVersion || st.installedVersion === currentVersion) {
+      return false;
+    }
+    const lock = path.join(daemonRoot(), 'upgrade.lock');
+    try {
+      const age = Date.now() - fs.statSync(lock).mtimeMs;
+      if (age > 10 * 60 * 1000) fs.rmSync(lock, { force: true });
+    } catch {
+      // 无残锁
+    }
+    try {
+      fs.mkdirSync(daemonRoot(), { recursive: true });
+      fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
+    } catch {
+      return false; // 另一个窗口的 server 正在升级
+    }
+    try {
+      dlog(`守护版本 ${st.installedVersion} 落后于当前 ${currentVersion}，自动重装升级`);
+      installDaemon();
+      dlog('守护自动升级完成');
+      return true;
+    } finally {
+      fs.rmSync(lock, { force: true });
+    }
+  } catch (e) {
+    // 升级失败不影响 server 正常启动，旧守护继续工作
+    dlog(`守护自动升级失败（不影响本进程）：${e}`);
     return false;
   }
 }
