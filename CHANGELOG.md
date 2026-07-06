@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [2.4.0](https://github.com/jianger666/cursor-feedback-extension/compare/v2.3.1...v2.4.0) (2026-07-06)
+
+
+### Features
+
+* 飞书 /new 拉起 Cursor CLI 会话 + 常驻守护进程（IDE 关闭可用） ([1d4513e](https://github.com/jianger666/cursor-feedback-extension/commit/1d4513ed29b8050dc92dc1d2632bf9d61912ab71))
+
 ### [2.3.1](https://github.com/jianger666/cursor-feedback-extension/compare/v2.3.0...v2.3.1) (2026-07-06)
 
 
