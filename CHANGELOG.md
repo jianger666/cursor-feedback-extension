@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [2.6.0](https://github.com/jianger666/cursor-feedback-extension/compare/v2.5.0...v2.6.0) (2026-07-06)
+
+
+### Features
+
+* **diag:** server 日志落盘（按天切割/7天保留）+ 诊断包导出（端点/面板按钮/密钥脱敏/无server降级）；/help 去掉计费说明 ([91a0d67](https://github.com/jianger666/cursor-feedback-extension/commit/91a0d67346a207afdab8d2df02278c40674bfbb5))
+
 ## [2.5.0](https://github.com/jianger666/cursor-feedback-extension/compare/v2.4.1...v2.5.0) (2026-07-06)
 
 
