@@ -516,7 +516,7 @@ class McpFeedbackServer {
 
       // 斜杠命令优先于反馈路由：用户显式输入命令时不应被当成对某张卡片的回复或排队消息。
       // 大小写不敏感：手机输入法常自动把句首字母大写（/New），必须容错。
-      if (/^\s*\/(new|stop|model|cwd|help)\b/i.test(text) && this.handleCliCommand(text, chatId)) return;
+      if (/^\s*\/(new|stop|model|cwd|help|projects)\b/i.test(text) && this.handleCliCommand(text, chatId)) return;
 
       if (parentId) {
         // 用户「回复」了某条卡片 → 用 parent_id 精确路由
@@ -613,10 +613,11 @@ class McpFeedbackServer {
 
   /**
    * 处理飞书斜杠命令。返回是否已消费该消息。
-   * - /new [工作目录] 任务描述：拉起一个 headless CLI 会话（非交互 + maxMode=false，扣 1 次请求）
+   * - /new [目录或项目名] 任务描述：拉起 headless CLI 会话（非交互 + maxMode=false，扣 1 次请求）。
+   *   工作目录刻意保持简单：显式指定 > 主目录，与当前开着哪些 IDE 窗口无关。
+   * - /projects：列出 Cursor 打开过的项目路径（供手机上查路径 / 复制给 /new）
    * - /stop：终止运行中的 CLI 会话
    * - /model [模型id]：查看 / 设置 CLI 会话模型（持久化；无论选什么模型都强制 maxMode=false）
-   * - /cwd [目录]：查看 / 设置默认工作目录（持久化；IDE 不开时 /new 用它）
    */
   private handleCliCommand(rawText: string, chatId: string): boolean {
     // 输入容错：首尾空格（飞书入站已 trim，这里兜底）；命令词大小写不敏感
@@ -627,14 +628,30 @@ class McpFeedbackServer {
       this.feishu.replyText(
         chatId,
         '可用命令：\n' +
-          '/new 任务描述 —— 拉起一个 CLI 会话跑任务（非 Max，扣 1 次请求）\n' +
-          '/new /绝对路径 任务描述 —— 指定工作目录拉起\n' +
+          '/new 任务描述 —— 拉起一个 CLI 会话跑任务（非 Max，扣 1 次请求；默认在主目录）\n' +
+          '/new 项目名或/绝对路径 任务描述 —— 在指定项目里拉起\n' +
+          '/projects —— 列出 Cursor 打开过的项目路径\n' +
           '/stop —— 终止运行中的 CLI 会话\n' +
           '/model [模型id] —— 查看 / 设置会话模型\n' +
-          '/cwd [绝对路径] —— 查看 / 设置默认工作目录\n' +
           '/help —— 看这份帮助\n\n' +
           '不带斜杠的消息照常作为反馈回复给等待中的 AI。',
       );
+      return true;
+    }
+
+    if (/^\/projects\b/i.test(text)) {
+      const projects = this.cliLauncher.listProjects();
+      if (!projects.length) {
+        this.feishu.replyText(chatId, '没有找到 Cursor 打开过的项目记录。可以直接用绝对路径：/new /绝对路径 任务描述');
+      } else {
+        const lines = projects.slice(0, 20).map((p) => `· ${path.basename(p)} — ${p}`);
+        this.feishu.replyText(
+          chatId,
+          `Cursor 打开过的项目（共 ${projects.length} 个${projects.length > 20 ? '，只列最近 20 个' : ''}）：\n` +
+            lines.join('\n') +
+            '\n\n用法：/new 项目名 任务描述（项目名唯一时直接匹配），或 /new 完整路径 任务描述',
+        );
+      }
       return true;
     }
 
@@ -664,29 +681,18 @@ class McpFeedbackServer {
       return true;
     }
 
-    const mCwd = text.match(/^\/cwd(?:\s+(\S+))?\s*$/i);
-    if (mCwd) {
-      if (mCwd[1]) {
-        const dir = this.expandDirToken(mCwd[1]);
-        if (!dir) {
-          this.feishu.replyText(chatId, `❌ 目录不存在或不是有效路径：${mCwd[1]}`);
-        } else {
-          this.cliLauncher.writeSettings({ defaultCwd: dir });
-          this.feishu.replyText(chatId, `✅ 默认工作目录已设为 ${dir}\n之后 /new 不带路径时都用它。`);
-        }
-      } else {
-        const cur = this.cliLauncher.defaultCwd();
-        this.feishu.replyText(
-          chatId,
-          `当前默认工作目录：${cur || '（未设置，回退到活跃窗口工作区或主目录）'}\n设置：/cwd 绝对路径`,
-        );
-      }
+    // /cwd 已移除（工作目录简化为「/new 里显式指定，否则主目录」），给老用户指个路
+    if (/^\/cwd\b/i.test(text)) {
+      this.feishu.replyText(
+        chatId,
+        '/cwd 已移除。现在直接在 /new 里指定：/new 项目名或/绝对路径 任务描述；不指定就在主目录跑。\n用 /projects 可以查项目路径。',
+      );
       return true;
     }
 
-    // /model、/cwd 带了多余参数（如 /model a b）：不落入反馈路由（用户明显在敲命令），回用法提示
-    if (/^\/(model|cwd)\b/i.test(text)) {
-      this.feishu.replyText(chatId, '参数不对。用法：/model [模型id]、/cwd [绝对路径]（都只接受一个参数，留空为查看当前值）');
+    // /model 带了多余参数（如 /model a b）：不落入反馈路由（用户明显在敲命令），回用法提示
+    if (/^\/model\b/i.test(text)) {
+      this.feishu.replyText(chatId, '参数不对。用法：/model 模型id（只接受一个参数，留空为查看当前模型）');
       return true;
     }
 
@@ -697,10 +703,11 @@ class McpFeedbackServer {
     if (!task) {
       this.feishu.replyText(
         chatId,
-        '用法：/new 任务描述\n' +
-          '可选在任务前带一个已存在的目录作为工作目录：\n' +
+        '用法：/new 任务描述（默认在主目录跑）\n' +
+          '可选在任务前带工作目录（绝对路径或项目名）：\n' +
           '/new /Users/me/proj 帮我看下测试为什么挂了\n' +
-          '相关命令：/cwd 设默认目录、/model 设模型、/stop 终止会话。',
+          '/new my-blog 帮我看下测试为什么挂了\n' +
+          '相关命令：/projects 查项目路径、/model 设模型、/stop 终止会话。',
       );
       return true;
     }
@@ -713,20 +720,34 @@ class McpFeedbackServer {
       return true;
     }
 
-    // 工作目录优先级：命令里显式路径 > /cwd 持久化默认目录 > 本实例归属窗口 > 主目录。
-    // 注意 ownerWorkspace 是小写归一化路径，macOS 默认大小写不敏感文件系统下可直接使用。
-    let cwd =
-      this.cliLauncher.defaultCwd() ||
-      (this.ownerWorkspace && fs.existsSync(this.ownerWorkspace)
-        ? this.ownerWorkspace
-        : os.homedir());
-    const explicitDir = this.expandDirToken(task.split(/\s+/)[0]);
+    // 工作目录刻意保持简单、与 IDE 窗口无关：命令里显式指定（路径或项目名）> 主目录。
+    let cwd = os.homedir();
+    const firstToken = task.split(/\s+/)[0];
+    const explicitDir = this.expandDirToken(firstToken);
     if (explicitDir) {
       cwd = explicitDir;
-      task = task.slice(task.split(/\s+/)[0].length).trim();
+      task = task.slice(firstToken.length).trim();
+    } else {
+      // 首词不是路径 → 试着当项目名匹配（Cursor 打开过的项目，按目录名精确匹配、忽略大小写）。
+      // 唯一命中才采用；多个重名让用户用完整路径消歧；没命中就当作任务正文的第一个词。
+      const matches = this.cliLauncher
+        .listProjects()
+        .filter((p) => path.basename(p).toLowerCase() === firstToken.toLowerCase());
+      if (matches.length === 1) {
+        cwd = matches[0];
+        task = task.slice(firstToken.length).trim();
+      } else if (matches.length > 1) {
+        this.feishu.replyText(
+          chatId,
+          `有 ${matches.length} 个同名项目「${firstToken}」：\n` +
+            matches.map((p) => `· ${p}`).join('\n') +
+            '\n请用完整路径：/new 完整路径 任务描述',
+        );
+        return true;
+      }
     }
     if (!task) {
-      this.feishu.replyText(chatId, '只给了目录没给任务。用法：/new [工作目录] 任务描述');
+      this.feishu.replyText(chatId, '只给了目录没给任务。用法：/new [目录或项目名] 任务描述');
       return true;
     }
 

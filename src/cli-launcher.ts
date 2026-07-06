@@ -21,12 +21,10 @@ function clog(message: string) {
   console.error(`[${new Date().toISOString()}] [cli-launcher] ${message}`);
 }
 
-/** /model、/cwd 命令写入的持久化设置（~/.cursor-feedback/cli.json，跨进程/重启共享） */
+/** /model 命令写入的持久化设置（~/.cursor-feedback/cli.json，跨进程/重启共享） */
 export interface CliSettings {
   /** /model 设置的模型 id；缺省用 DEFAULT_MODEL */
   model?: string;
-  /** /cwd 设置的默认工作目录；/new 未显式带路径时优先用它 */
-  defaultCwd?: string;
 }
 
 export interface CliSessionResult {
@@ -211,11 +209,58 @@ export class CliLauncher {
     );
   }
 
-  /** /cwd 设置的默认工作目录（存在才返回） */
-  defaultCwd(): string | null {
-    const d = this.readSettings().defaultCwd;
-    if (d && fs.existsSync(d)) return d;
-    return null;
+  /** Cursor IDE 的 storage.json 路径（平台相关） */
+  private static storageJsonPath(): string {
+    if (process.platform === 'darwin') {
+      return path.join(os.homedir(), 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage', 'storage.json');
+    }
+    if (process.platform === 'win32') {
+      return path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'Cursor', 'User', 'globalStorage', 'storage.json');
+    }
+    return path.join(os.homedir(), '.config', 'Cursor', 'User', 'globalStorage', 'storage.json');
+  }
+
+  /**
+   * 用户在 Cursor IDE 里打开过的项目目录（供手机上查路径 / 按项目名拉起会话）。
+   * 数据源是 IDE 的 storage.json：backupWorkspaces.folders 是当前/最近打开的窗口（排前面），
+   * profileAssociations.workspaces 是历史打开过的全部工作区。只返回仍然存在的目录。
+   */
+  listProjects(): string[] {
+    let raw: {
+      backupWorkspaces?: { folders?: Array<{ folderUri?: string }> };
+      profileAssociations?: { workspaces?: Record<string, unknown> };
+    };
+    try {
+      raw = JSON.parse(fs.readFileSync(CliLauncher.storageJsonPath(), 'utf-8'));
+    } catch {
+      return [];
+    }
+    const uris = [
+      ...(raw.backupWorkspaces?.folders || []).map((f) => f.folderUri || ''),
+      ...Object.keys(raw.profileAssociations?.workspaces || {}),
+    ];
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const uri of uris) {
+      if (!uri.startsWith('file://')) continue;
+      let dir: string;
+      try {
+        dir = decodeURIComponent(uri.replace(/^file:\/\//, ''));
+      } catch {
+        continue;
+      }
+      // Windows 的 URI 形如 file:///c%3A/... → 去掉开头多余的 /
+      if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(dir)) dir = dir.slice(1);
+      const key = dir.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      try {
+        if (fs.statSync(dir).isDirectory()) result.push(dir);
+      } catch {
+        // 已删除的目录不展示
+      }
+    }
+    return result;
   }
 
   /**

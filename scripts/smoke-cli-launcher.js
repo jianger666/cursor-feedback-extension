@@ -123,6 +123,35 @@ async function main() {
     check('新任务正常结束', resultC.code === 0);
   }
 
+  console.log('B3. listProjects：读 IDE storage.json、去重、过滤已删除目录');
+  {
+    // 构造假的 Cursor storage.json（按当前平台的真实路径规则放在 tmpHome 下）
+    const storageDir = process.platform === 'darwin'
+      ? path.join(tmpHome, 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage')
+      : process.platform === 'win32'
+        ? path.join(process.env.APPDATA || path.join(tmpHome, 'AppData', 'Roaming'), 'Cursor', 'User', 'globalStorage')
+        : path.join(tmpHome, '.config', 'Cursor', 'User', 'globalStorage');
+    fs.mkdirSync(storageDir, { recursive: true });
+    const projA = path.join(tmpHome, 'proj-a');
+    const projB = path.join(tmpHome, 'proj b'); // 含空格 → 验证 URI 解码
+    fs.mkdirSync(projA);
+    fs.mkdirSync(projB);
+    const uri = (p) => 'file://' + p.split(path.sep).map(encodeURIComponent).join('/');
+    fs.writeFileSync(path.join(storageDir, 'storage.json'), JSON.stringify({
+      backupWorkspaces: { folders: [{ folderUri: uri(projB) }] },
+      profileAssociations: { workspaces: {
+        [uri(projA)]: 'x',
+        [uri(projB)]: 'x', // 与 backup 重复 → 应去重
+        [uri(path.join(tmpHome, 'deleted-proj'))]: 'x', // 不存在 → 应过滤
+      } },
+    }));
+    const launcher = new CliLauncher();
+    const projects = launcher.listProjects();
+    check('返回 2 个项目（去重 + 过滤已删除）', projects.length === 2);
+    check('最近打开的排在前面', projects[0] === projB);
+    check('URI 编码路径被正确解码', projects.includes(projB) && projects.includes(projA));
+  }
+
   console.log('C. 二进制不存在 → 走 error 收尾而不是抛异常');
   {
     process.env.CURSOR_AGENT_PATH = path.join(tmpHome, 'no-such-binary');

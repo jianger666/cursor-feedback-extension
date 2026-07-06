@@ -270,11 +270,13 @@ Send these directly in the bot chat:
 
 | Command | What it does |
 |---------|--------------|
-| `/new task description` | Launch a headless CLI session for the task (in the active window's workspace, or the `/cwd` default) |
-| `/new /abs/path task description` | Launch with an explicit working directory |
+| `/new task description` | Launch a headless CLI session for the task (in your home directory by default) |
+| `/new /abs/path task description` | Launch in an explicit working directory |
+| `/new project-name task description` | Launch in a project Cursor has opened before (unique folder-name match) |
+| `/projects` | List project paths Cursor has opened (to look up / copy into `/new`) |
 | `/stop` | Terminate the running CLI session |
 | `/model [modelId]` | Show / set the session model (persisted) |
-| `/cwd [dir]` | Show / set the default working directory (persisted) |
+| `/help` | Show command usage |
 
 - Sessions run in **non-interactive mode** with `maxMode=false` force-written before spawn — on request-based plans each session costs exactly 1 request, never Max billing.
 - The launched agent talks to you through this extension's feedback cards: confirmations and progress reports are pushed to Feishu; just reply to the cards.
