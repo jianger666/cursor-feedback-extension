@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.3.1](https://github.com/jianger666/cursor-feedback-extension/compare/v2.3.0...v2.3.1) (2026-07-06)
+
+
+### Bug Fixes
+
+* **mcp:** 重复投递去重去掉 90s 时间窗，wire id 精确识别 + 迟到重投结果重放 ([3eb6be5](https://github.com/jianger666/cursor-feedback-extension/commit/3eb6be5771feb56f11e09f6f61f96fd0dbf627da))
+
 ## [2.3.0](https://github.com/jianger666/cursor-feedback-extension/compare/v2.2.0...v2.3.0) (2026-07-04)
 
 
