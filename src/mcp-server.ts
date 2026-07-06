@@ -515,7 +515,8 @@ class McpFeedbackServer {
       if (!text && images.length === 0 && files.length === 0) return;
 
       // 斜杠命令优先于反馈路由：用户显式输入命令时不应被当成对某张卡片的回复或排队消息。
-      if (/^\/(new|stop|model|cwd)\b/.test(text) && this.handleCliCommand(text, chatId)) return;
+      // 大小写不敏感：手机输入法常自动把句首字母大写（/New），必须容错。
+      if (/^\s*\/(new|stop|model|cwd|help)\b/i.test(text) && this.handleCliCommand(text, chatId)) return;
 
       if (parentId) {
         // 用户「回复」了某条卡片 → 用 parent_id 精确路由
@@ -617,8 +618,27 @@ class McpFeedbackServer {
    * - /model [模型id]：查看 / 设置 CLI 会话模型（持久化；无论选什么模型都强制 maxMode=false）
    * - /cwd [目录]：查看 / 设置默认工作目录（持久化；IDE 不开时 /new 用它）
    */
-  private handleCliCommand(text: string, chatId: string): boolean {
-    if (/^\/stop\b/.test(text)) {
+  private handleCliCommand(rawText: string, chatId: string): boolean {
+    // 输入容错：首尾空格（飞书入站已 trim，这里兜底）；命令词大小写不敏感
+    //（手机输入法常自动把句首大写成 /New）。任务正文原样保留。
+    const text = rawText.trim();
+
+    if (/^\/help\b/i.test(text)) {
+      this.feishu.replyText(
+        chatId,
+        '可用命令：\n' +
+          '/new 任务描述 —— 拉起一个 CLI 会话跑任务（非 Max，扣 1 次请求）\n' +
+          '/new /绝对路径 任务描述 —— 指定工作目录拉起\n' +
+          '/stop —— 终止运行中的 CLI 会话\n' +
+          '/model [模型id] —— 查看 / 设置会话模型\n' +
+          '/cwd [绝对路径] —— 查看 / 设置默认工作目录\n' +
+          '/help —— 看这份帮助\n\n' +
+          '不带斜杠的消息照常作为反馈回复给等待中的 AI。',
+      );
+      return true;
+    }
+
+    if (/^\/stop\b/i.test(text)) {
       if (this.cliLauncher.stop()) {
         this.feishu.replyText(chatId, '🛑 正在终止 CLI 会话…结束后我会再发一条收尾消息。');
       } else {
@@ -627,7 +647,7 @@ class McpFeedbackServer {
       return true;
     }
 
-    const mModel = text.match(/^\/model(?:\s+(\S+))?\s*$/);
+    const mModel = text.match(/^\/model(?:\s+(\S+))?\s*$/i);
     if (mModel) {
       if (mModel[1]) {
         this.cliLauncher.writeSettings({ model: mModel[1] });
@@ -644,7 +664,7 @@ class McpFeedbackServer {
       return true;
     }
 
-    const mCwd = text.match(/^\/cwd(?:\s+(\S+))?\s*$/);
+    const mCwd = text.match(/^\/cwd(?:\s+(\S+))?\s*$/i);
     if (mCwd) {
       if (mCwd[1]) {
         const dir = this.expandDirToken(mCwd[1]);
@@ -664,7 +684,13 @@ class McpFeedbackServer {
       return true;
     }
 
-    const m = text.match(/^\/new\s*([\s\S]*)$/);
+    // /model、/cwd 带了多余参数（如 /model a b）：不落入反馈路由（用户明显在敲命令），回用法提示
+    if (/^\/(model|cwd)\b/i.test(text)) {
+      this.feishu.replyText(chatId, '参数不对。用法：/model [模型id]、/cwd [绝对路径]（都只接受一个参数，留空为查看当前值）');
+      return true;
+    }
+
+    const m = text.match(/^\/new\b\s*([\s\S]*)$/i);
     if (!m) return false;
     let task = (m[1] || '').trim();
 
