@@ -90,6 +90,39 @@ async function main() {
     check('空闲时 stop 返回 false', launcher.stop() === false);
   }
 
+  console.log('B2. 多实例全局锁：并发拒绝 + 跨实例 /stop + 死锁自清');
+  {
+    // 模拟两个窗口/守护实例：两个 launcher 对象共享磁盘锁文件
+    writeFakeAgent('sleep 60');
+    const a = new CliLauncher();
+    const b = new CliLauncher();
+    const doneA = new Promise((resolve) => {
+      const err = a.start('实例A的长任务', tmpHome, resolve);
+      check('实例A启动成功', err === null);
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    check('实例B全局视角 isRunning=true', b.isRunning() === true);
+    const errB = b.start('实例B的任务', tmpHome, () => {});
+    check('实例B start 被全局锁拒绝', typeof errB === 'string' && errB.includes('已有'));
+    check('实例B describe 能看到 A 的任务', b.describe().includes('实例A的长任务'));
+    check('实例B 跨实例 stop 返回 true', b.stop() === true);
+    const resultA = await doneA;
+    check('A 的会话被 B 终止且标记 stopped', resultA.stopped === true);
+    check('锁已释放（B 视角 isRunning=false）', b.isRunning() === false);
+
+    // 死锁自清：伪造一个持锁进程已死的残锁
+    const lockPath = path.join(tmpHome, '.cursor-feedback', 'cli-session.lock');
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, task: '幽灵', startedAt: Date.now(), ownerPid: 999998 }));
+    check('残锁（进程已死）不算运行中', b.isRunning() === false);
+    check('残锁已被自动清除', !fs.existsSync(lockPath));
+    writeFakeAgent('echo ok');
+    const resultC = await new Promise((resolve) => {
+      const err = b.start('残锁后的新任务', tmpHome, resolve);
+      check('清残锁后可正常拉起', err === null);
+    });
+    check('新任务正常结束', resultC.code === 0);
+  }
+
   console.log('C. 二进制不存在 → 走 error 收尾而不是抛异常');
   {
     process.env.CURSOR_AGENT_PATH = path.join(tmpHome, 'no-such-binary');

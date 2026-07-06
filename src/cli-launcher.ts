@@ -12,7 +12,7 @@
  * - 拉起的 agent 会通过全局注册的 cursor-feedback MCP 发飞书卡片，用户在手机上
  *   直接和这个会话对话——本模块只负责拉起和收尾，过程中的交互走既有反馈链路。
  */
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, execFileSync, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -44,6 +44,18 @@ export interface CliSessionResult {
   elapsedMs: number;
 }
 
+/** 磁盘全局会话锁：多窗口/守护多实例共享（飞书把命令推给哪个实例是不确定的） */
+interface CliSessionLock {
+  /** 会话进程 pid；0 = 刚抢到锁、spawn 还没完成 */
+  pid: number;
+  task: string;
+  startedAt: number;
+  /** 拉起会话的实例进程 pid（pid=0 阶段用它判活；收尾时校验归属） */
+  ownerPid: number;
+  /** 另一个实例发起了 /stop（跨实例终止时标记，让托管实例收尾文案报「已终止」而非「异常退出」） */
+  stopRequested?: boolean;
+}
+
 export class CliLauncher {
   /** 默认模型：实测非交互模式下该模型 + maxMode=false 固定扣 1 次请求 */
   private static readonly DEFAULT_MODEL = 'claude-fable-5-thinking-max';
@@ -57,15 +69,117 @@ export class CliLauncher {
   private taskBrief = '';
   private stopRequested = false;
 
-  isRunning(): boolean {
-    return this.child !== null;
+  /* ---------- 磁盘全局会话锁 ----------
+   * 「同时只跑一个 CLI 会话」必须全局生效：多窗口 + 守护进程是多实例并存，
+   * 飞书把 /new、/stop 推给哪个实例是不确定的（长连接负载均衡）。只看本实例的
+   * child 会被击穿：A 拉了会话，下一条 /new 推给 B，B 以为空闲又拉一个。
+   * 锁文件记录会话进程 pid，任何实例都能据此判忙 / 跨实例终止；
+   * 持锁进程崩溃后锁自动失效（pid 探活），不会死锁。 */
+
+  private lockPath(): string {
+    return path.join(os.homedir(), '.cursor-feedback', 'cli-session.lock');
   }
 
-  /** 正在运行的会话描述（用于「已有会话在跑」的回执） */
+  private readLock(): CliSessionLock | null {
+    try {
+      const j = JSON.parse(fs.readFileSync(this.lockPath(), 'utf-8')) as CliSessionLock;
+      return typeof j.pid === 'number' ? j : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private static pidAlive(pid: number): boolean {
+    if (!pid || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * pid 是否确实是 cursor-agent 会话进程。防 pid 复用：锁残留（极端崩溃）后系统把同号
+   * pid 分给了无关进程，跨实例 /stop 若不校验会误杀无辜。校验失败按「不是会话」处理。
+   */
+  private static pidLooksLikeAgent(pid: number): boolean {
+    try {
+      if (process.platform === 'win32') {
+        const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
+          encoding: 'utf-8',
+        });
+        return /cursor-agent|node|cmd\.exe/i.test(out);
+      }
+      const out = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf-8' });
+      return /cursor-agent/i.test(out);
+    } catch {
+      return false;
+    }
+  }
+
+  /** 当前全局是否有活跃会话（锁存在且会话进程活着；死锁视为无会话） */
+  private aliveLock(): CliSessionLock | null {
+    const lock = this.readLock();
+    if (!lock) return null;
+    // pid=0 = 另一个实例刚抢到锁、spawn 还没完成：以它的实例进程判活，避免这瞬间被当死锁误清
+    const alive = lock.pid > 0
+      ? CliLauncher.pidAlive(lock.pid)
+      : CliLauncher.pidAlive(lock.ownerPid);
+    if (!alive) {
+      // 持锁会话已死（实例崩溃 / 强杀），清掉残锁
+      fs.rmSync(this.lockPath(), { force: true });
+      return null;
+    }
+    return lock;
+  }
+
+  /** 原子抢锁：wx 独占创建。返回是否抢到（false = 别的实例刚抢先） */
+  private tryAcquireLock(task: string): boolean {
+    // 先清死锁，再独占创建（两个实例同时 /new 时只有一个 wx 成功）
+    this.aliveLock();
+    const lock: CliSessionLock = { pid: 0, task, startedAt: Date.now(), ownerPid: process.pid };
+    try {
+      fs.mkdirSync(path.dirname(this.lockPath()), { recursive: true });
+      fs.writeFileSync(this.lockPath(), JSON.stringify(lock), { flag: 'wx' });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private updateLockPid(pid: number): void {
+    const lock = this.readLock();
+    if (lock && lock.ownerPid === process.pid) {
+      fs.writeFileSync(this.lockPath(), JSON.stringify({ ...lock, pid }));
+    }
+  }
+
+  private releaseLock(): void {
+    const lock = this.readLock();
+    if (lock && lock.ownerPid === process.pid) {
+      fs.rmSync(this.lockPath(), { force: true });
+    }
+  }
+
+  /** 全局视角：是否有会话在跑（本实例或其他实例拉起的都算） */
+  isRunning(): boolean {
+    return this.child !== null || this.aliveLock() !== null;
+  }
+
+  /** 正在运行的会话描述（用于「已有会话在跑」的回执；含其他实例拉起的会话） */
   describe(): string {
-    if (!this.child) return '';
-    const mins = Math.round((Date.now() - this.startedAt) / 60000);
-    return `「${this.taskBrief}」（已运行 ${mins} 分钟）`;
+    if (this.child) {
+      const mins = Math.round((Date.now() - this.startedAt) / 60000);
+      return `「${this.taskBrief}」（已运行 ${mins} 分钟）`;
+    }
+    const lock = this.aliveLock();
+    if (lock) {
+      const brief = lock.task.length > 40 ? lock.task.slice(0, 40) + '…' : lock.task;
+      const mins = Math.round((Date.now() - lock.startedAt) / 60000);
+      return `「${brief}」（已运行 ${mins} 分钟，由另一个窗口实例托管）`;
+    }
+    return '';
   }
 
   private settingsPath(): string {
@@ -186,16 +300,24 @@ export class CliLauncher {
    * @returns 启动失败时返回错误说明字符串；成功返回 null，结果经 onDone 回调
    */
   start(task: string, cwd: string, onDone: (result: CliSessionResult) => void): string | null {
-    if (this.child) return '已有一个 CLI 会话在运行：' + this.describe();
+    if (this.isRunning()) return '已有一个 CLI 会话在运行：' + this.describe();
+    // 原子抢全局锁：两个实例同时收到 /new 时只有一个能抢到
+    if (!this.tryAcquireLock(task)) {
+      return '已有一个 CLI 会话在运行：' + (this.describe() || '（另一个窗口实例刚刚抢先拉起）');
+    }
 
     try {
       this.ensureMaxModeOff();
     } catch (e) {
+      this.releaseLock();
       return '写入 cli-config.json 失败：' + e;
     }
 
     const bin = this.findBinary();
-    if (!bin) return '找不到 cursor-agent，可通过环境变量 CURSOR_AGENT_PATH 指定路径。';
+    if (!bin) {
+      this.releaseLock();
+      return '找不到 cursor-agent，可通过环境变量 CURSOR_AGENT_PATH 指定路径。';
+    }
 
     const workDir = fs.existsSync(cwd) ? cwd : os.homedir();
     const prompt = this.buildPrompt(task);
@@ -231,6 +353,7 @@ export class CliLauncher {
         detached: !isWin,
       });
     } catch (e) {
+      this.releaseLock();
       return '拉起 cursor-agent 失败：' + e;
     }
 
@@ -238,6 +361,7 @@ export class CliLauncher {
     this.startedAt = Date.now();
     this.taskBrief = task.length > 40 ? task.slice(0, 40) + '…' : task;
     this.stopRequested = false;
+    this.updateLockPid(child.pid || 0);
     clog(`CLI 会话已拉起: pid=${child.pid} cwd=${workDir} model=${this.model()}`);
 
     let timedOut = false;
@@ -253,8 +377,13 @@ export class CliLauncher {
     const finish = (code: number | null) => {
       clearTimeout(killTimer);
       const elapsedMs = Date.now() - this.startedAt;
-      const stopped = this.stopRequested;
+      // 跨实例 /stop 会在锁上打 stopRequested 标记再杀进程，这里一并算「主动终止」
+      const lockAtFinish = this.readLock();
+      const stopped =
+        this.stopRequested ||
+        !!(lockAtFinish && lockAtFinish.ownerPid === process.pid && lockAtFinish.stopRequested);
       this.child = null;
+      this.releaseLock();
       clog(`CLI 会话结束: code=${code} elapsed=${Math.round(elapsedMs / 1000)}s timedOut=${timedOut} stopped=${stopped}`);
       onDone({
         code,
@@ -276,19 +405,52 @@ export class CliLauncher {
     return null;
   }
 
-  /** 用户 /stop 主动终止会话。返回是否有会话被终止。 */
+  /**
+   * 用户 /stop 主动终止会话。返回是否有会话被终止。
+   * 跨实例：会话可能由另一个窗口实例托管（飞书把 /stop 推给了不同实例），
+   * 此时按锁里的 pid 直接终止会话进程，托管实例的 close 回调会自然收尾并回执。
+   */
   stop(): boolean {
-    if (!this.child) return false;
-    this.stopRequested = true;
-    CliLauncher.killTree(this.child, 'SIGTERM');
-    // SIGTERM 5s 内没退出则补 SIGKILL
-    const child = this.child;
-    setTimeout(() => {
-      if (this.child === child) {
-        CliLauncher.killTree(child, 'SIGKILL');
+    if (this.child) {
+      this.stopRequested = true;
+      CliLauncher.killTree(this.child, 'SIGTERM');
+      // SIGTERM 5s 内没退出则补 SIGKILL
+      const child = this.child;
+      setTimeout(() => {
+        if (this.child === child) {
+          CliLauncher.killTree(child, 'SIGKILL');
+        }
+      }, 5000);
+      return true;
+    }
+    const lock = this.aliveLock();
+    if (lock && lock.pid > 0) {
+      if (!CliLauncher.pidLooksLikeAgent(lock.pid)) {
+        // pid 已被无关进程复用（残锁）：清锁但绝不误杀
+        clog(`锁 pid=${lock.pid} 不是 cursor-agent（已被复用），清除残锁`);
+        fs.rmSync(this.lockPath(), { force: true });
+        return false;
       }
-    }, 5000);
-    return true;
+      clog(`跨实例终止 CLI 会话: pid=${lock.pid}（由 ${lock.ownerPid} 托管）`);
+      try {
+        // 先在锁上打「主动终止」标记，托管实例收尾时据此报「已终止」而非「异常退出」
+        fs.writeFileSync(this.lockPath(), JSON.stringify({ ...lock, stopRequested: true }));
+      } catch {
+        // 标记失败只影响收尾文案
+      }
+      try {
+        // 会话进程是托管实例 detached 出来的进程组组长，杀整组
+        if (process.platform === 'win32') {
+          spawn('taskkill', ['/pid', String(lock.pid), '/T', '/F'], { stdio: 'ignore' });
+        } else {
+          try { process.kill(-lock.pid, 'SIGTERM'); } catch { process.kill(lock.pid, 'SIGTERM'); }
+        }
+      } catch {
+        // 进程刚好自己结束了
+      }
+      return true;
+    }
+    return false;
   }
 
   /**
