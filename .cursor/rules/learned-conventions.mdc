@@ -1,0 +1,9 @@
+---
+description: 从对话反馈中积累的编码约定和偏好
+alwaysApply: true
+---
+
+# 编码约定
+
+## 发布流程
+- 发版（npm / Open VSX / VS Code Marketplace）前必须经用户明确确认，绝不能改完代码直接发。改动完成后先提交 + 跑冒烟，向用户汇报并等确认后再走发版流程。

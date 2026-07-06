@@ -516,7 +516,7 @@ class McpFeedbackServer {
 
       // 斜杠命令优先于反馈路由：用户显式输入命令时不应被当成对某张卡片的回复或排队消息。
       // 大小写不敏感：手机输入法常自动把句首字母大写（/New），必须容错。
-      if (/^\s*\/(new|stop|model|cwd|help|projects)\b/i.test(text) && this.handleCliCommand(text, chatId)) return;
+      if (/^\s*[/／](new|stop|model|cwd|help|projects)\b/i.test(text) && this.handleCliCommand(text, chatId)) return;
 
       if (parentId) {
         // 用户「回复」了某条卡片 → 用 parent_id 精确路由
@@ -620,21 +620,31 @@ class McpFeedbackServer {
    * - /model [模型id]：查看 / 设置 CLI 会话模型（持久化；无论选什么模型都强制 maxMode=false）
    */
   private handleCliCommand(rawText: string, chatId: string): boolean {
-    // 输入容错：首尾空格（飞书入站已 trim，这里兜底）；命令词大小写不敏感
-    //（手机输入法常自动把句首大写成 /New）。任务正文原样保留。
-    const text = rawText.trim();
+    // 输入容错：首尾空格（飞书入站已 trim，这里兜底；trim 同样覆盖全角空格 U+3000）；
+    // 全角斜杠「／」归一化（中文输入法常见）；命令词大小写不敏感（手机输入法自动把句首
+    // 大写成 /New）。任务正文原样保留。
+    const text = rawText.trim().replace(/^／/, '/');
 
     if (/^\/help\b/i.test(text)) {
       this.feishu.replyText(
         chatId,
-        '可用命令：\n' +
-          '/new 任务描述 —— 拉起一个 CLI 会话跑任务（非 Max，扣 1 次请求；默认在主目录）\n' +
-          '/new 项目名或/绝对路径 任务描述 —— 在指定项目里拉起\n' +
-          '/projects —— 列出 Cursor 打开过的项目路径\n' +
-          '/stop —— 终止运行中的 CLI 会话\n' +
-          '/model [模型id] —— 查看 / 设置会话模型\n' +
-          '/help —— 看这份帮助\n\n' +
-          '不带斜杠的消息照常作为反馈回复给等待中的 AI。',
+        '📖 命令一览（大小写、首尾空格都不敏感）\n\n' +
+          '🚀 /new 任务描述\n' +
+          '拉起一个全新的 AI 会话跑任务，电脑不用开着 Cursor（需已开启常驻服务）。\n' +
+          '· 默认工作目录是主目录；可在任务前指定项目：\n' +
+          '  /new /Users/me/proj 帮我修下测试\n' +
+          '  /new crm-web 帮我修下测试（项目名唯一时自动匹配到完整路径）\n' +
+          '· 非交互模式 + 强制 maxMode=false，每次会话固定只扣 1 次请求\n' +
+          '· AI 需要沟通时会发反馈卡片，直接回复即可；同时只能跑一个会话\n\n' +
+          '📁 /projects\n' +
+          '列出 Cursor 打开过的项目路径（查路径 / 复制给 /new，也可直接用项目名）\n\n' +
+          '🛑 /stop\n' +
+          '终止运行中的 CLI 会话（任何窗口拉起的都能停）\n\n' +
+          '🧠 /model [模型id]\n' +
+          '查看 / 设置会话模型（持久化；无论选什么模型都不会走 Max 计费）\n\n' +
+          '❓ /help\n' +
+          '看这份帮助\n\n' +
+          '💬 不带斜杠的消息照常作为反馈：回复某张卡片就送达那个请求，直接发送则给当前等待中的 AI。',
       );
       return true;
     }
