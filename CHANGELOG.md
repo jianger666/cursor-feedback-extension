@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [2.7.0](https://github.com/jianger666/cursor-feedback-extension/compare/v2.6.0...v2.7.0) (2026-07-06)
+
+
+### Features
+
+* **daemon:** 守护自动升级——IDE 新版 server 启动时发现守护版本落后即静默重装（带并发锁/残锁自清） ([738c270](https://github.com/jianger666/cursor-feedback-extension/commit/738c270f4bb6b4b6115f30b5c811fca26d10b43a))
+
 ## [2.6.0](https://github.com/jianger666/cursor-feedback-extension/compare/v2.5.0...v2.6.0) (2026-07-06)
 
 
