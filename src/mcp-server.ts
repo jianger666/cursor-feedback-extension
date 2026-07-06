@@ -679,10 +679,11 @@ class McpFeedbackServer {
     if (mModel) {
       if (mModel[1]) {
         this.cliLauncher.writeSettings({ model: mModel[1] });
-        // -max 后缀 = Max 变体模型：cursor-agent 启动时会把 maxMode 改回 true，
-        // 写 false 拦不住（实测账单验证），必须提醒用户换非 max 变体
+        // -max 后缀 = Max 变体模型：会话过后 CLI 会把 cli-config.json 归一化成
+        // maxMode=true + selectedModel(effort=max)，残留会让后续会话按 Max 计费
+        // （实测扣 40+）。拉起前已做残留清理，但仍建议用户直接换非 max 变体避险。
         const maxWarn = /-max$/i.test(mModel[1])
-          ? '\n⚠️ 这个模型是 Max 变体（-max 后缀），会按 Max 计费且无法关闭！按次计费套餐建议换非 max 变体（如 claude-fable-5-thinking-xhigh）。'
+          ? '\n⚠️ 这个模型是 Max 变体（-max 后缀），实测有被按 Max 计费的风险（一次会话扣 40+ 次）！按次计费套餐强烈建议换非 max 变体（如 claude-fable-5-thinking-xhigh）。'
           : '';
         this.feishu.replyText(chatId, `✅ CLI 模型已设为 ${mModel[1]}${maxWarn}`);
       } else {

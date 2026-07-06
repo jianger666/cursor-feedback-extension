@@ -2,12 +2,13 @@
  * CLI 会话拉起器：飞书 /new 命令 → 非交互模式 spawn cursor-agent。
  *
  * 关键设计（均来自实测结论，勿随意更改）：
- * - 默认模型必须是**非 Max 变体**（见 DEFAULT_MODEL 注释）：`-max` 后缀模型本身就是
- *   Max 变体，CLI 会按模型真实属性把 maxMode 改回 true，写 false 拦不住；单轮会话
- *   碰巧只扣 1 次会掩盖问题，多轮直接扣 40+。非 Max 模型不管多少轮都扣 1 次。
+ * - 默认模型用**非 Max 变体**（见 DEFAULT_MODEL 注释）：`-max` 后缀模型的会话会让
+ *   CLI 把 cli-config.json 归一化成 maxMode=true + selectedModel(effort=max)。
+ *   这份残留若不清除，下一次会话直接按 Max 跑（2026-07-06 账单实测：同一模型
+ *   第一次干净配置扣 1 次无 MAX 标签，第二次带残留扣 40+ 带 MAX 标签）。
+ * - spawn 前每次都强制重写 ~/.cursor/cli-config.json：maxMode=false + 目标模型，
+ *   并删除 selectedModel 残留——三件缺一不可，不能信任上次的状态。
  * - 必须用非交互 print 模式（-p）：交互式 TUI 会持久改写 cli-config.json 的模型选择。
- * - spawn 前每次都强制把 ~/.cursor/cli-config.json 写成 maxMode=false + 目标模型：
- *   兜底防御，不能信任上次的残留状态。
  * - CLI 不读 IDE 的全局 User Rules，用户的个人规则要显式注入到 prompt 里
  *   （从 ~/.cursor-feedback/cli-rules.md 读取，没有则只注入 cursor-feedback 沟通协议）。
  * - 必须带 --approve-mcps：MCP 批准状态按工作目录落盘，headless 会话无法弹批准框，
@@ -63,11 +64,11 @@ interface CliSessionLock {
 
 export class CliLauncher {
   /**
-   * 默认模型：必须用非 Max 变体（2026-07-06 账单实测）。新版 CLI 里 `-max` 后缀
-   * = Max 变体（如 claude-fable-5-thinking-max 显示名就是 "Fable 5 1M Max Thinking"），
-   * 会话启动时 CLI 会按模型真实属性把 cli-config.json 改回 maxMode=true 并写入
-   * selectedModel（effort=max），一次会话扣了 40+ 次。thinking-xhigh 是非 Max 的
-   * 最高档，固定扣 1 次。
+   * 默认模型：用非 Max 变体（2026-07-06 账单实测）。`-max` 后缀模型（显示名
+   * "Fable 5 1M Max Thinking"）本身是 Max 变体：会话过后 CLI 会把 cli-config.json
+   * 归一化成 maxMode=true + selectedModel(effort=max)，残留不清则下次会话按 Max
+   * 计费（实测扣 40+）。ensureMaxModeOff 已做残留清理，但默认模型仍选 thinking-xhigh
+   * （非 Max 最高档，固定扣 1 次）从根上避开这类状态机风险。
    */
   private static readonly DEFAULT_MODEL = 'claude-fable-5-thinking-xhigh';
   /** 会话时长兜底：防止无人回复的 headless 会话无限续期挂着 */
