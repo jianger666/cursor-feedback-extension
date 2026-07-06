@@ -33,11 +33,17 @@ function writeFakeAgent(script) {
 }
 
 async function main() {
-  // 预置：残留的 cli-config.json 是 maxMode=true（模拟交互式会话改回 max 的现场）
+  // 预置：残留的 cli-config.json 是 maxMode=true + selectedModel 带 effort=max
+  // （模拟 Max 模型会话结束后 cursor-agent 写回的现场）
   fs.mkdirSync(path.join(tmpHome, '.cursor'), { recursive: true });
   fs.writeFileSync(
     path.join(tmpHome, '.cursor', 'cli-config.json'),
-    JSON.stringify({ maxMode: true, model: { modelId: 'x', maxMode: true }, keepMe: 42 }),
+    JSON.stringify({
+      maxMode: true,
+      model: { modelId: 'x', maxMode: true },
+      selectedModel: { modelId: 'claude-fable-5-thinking-max', effort: 'max' },
+      keepMe: 42,
+    }),
   );
   // 预置：mcp.json 里混着 boolean/number env（实测会让 CLI 静默忽略整个文件）
   fs.writeFileSync(
@@ -67,8 +73,9 @@ async function main() {
     check('参数含 -p 非交互', result.output.includes('ARG::-p'));
     check('参数含 --trust', result.output.includes('ARG::--trust'));
     check('参数含 --approve-mcps（headless 必须自动批准 MCP）', result.output.includes('ARG::--approve-mcps'));
-    check('参数含 --model claude-fable-5-thinking-max',
-      result.output.includes('ARG::claude-fable-5-thinking-max'));
+    check('参数含 --model 默认非 Max 变体（xhigh）',
+      result.output.includes('ARG::claude-fable-5-thinking-xhigh'));
+    check('默认模型绝不能是 -max 后缀的 Max 变体', !result.output.includes('ARG::claude-fable-5-thinking-max'));
     check('prompt 注入沟通协议', result.output.includes('interactive_feedback'));
     check('prompt 注入用户规则', result.output.includes('永远不要启动Subagent'));
     check('prompt 注入任务本体', result.output.includes('帮我修个bug'));
@@ -76,7 +83,8 @@ async function main() {
     const cfg = JSON.parse(fs.readFileSync(path.join(tmpHome, '.cursor', 'cli-config.json'), 'utf-8'));
     check('cli-config 顶层 maxMode=false', cfg.maxMode === false);
     check('cli-config model.maxMode=false', cfg.model && cfg.model.maxMode === false);
-    check('cli-config model.modelId 正确', cfg.model && cfg.model.modelId === 'claude-fable-5-thinking-max');
+    check('cli-config model.modelId 正确', cfg.model && cfg.model.modelId === 'claude-fable-5-thinking-xhigh');
+    check('cli-config selectedModel 残留已清除（effort=max 兜底）', !('selectedModel' in cfg));
     check('cli-config 其他字段保留', cfg.keepMe === 42);
 
     const mcp = JSON.parse(fs.readFileSync(path.join(tmpHome, '.cursor', 'mcp.json'), 'utf-8'));

@@ -642,7 +642,7 @@ class McpFeedbackServer {
           '🛑 /stop\n' +
           '终止运行中的 CLI 会话（任何窗口拉起的都能停）\n\n' +
           '🧠 /model [模型id]\n' +
-          '查看 / 设置会话模型（持久化）\n\n' +
+          '查看 / 设置会话模型（持久化）。⚠️ 别选 -max 后缀的模型，那是 Max 变体、必按 Max 计费\n\n' +
           '❓ /help\n' +
           '看这份帮助\n\n' +
           '💬 不带斜杠的消息照常作为反馈：回复某张卡片就送达那个请求，直接发送则给当前等待中的 AI。',
@@ -679,14 +679,16 @@ class McpFeedbackServer {
     if (mModel) {
       if (mModel[1]) {
         this.cliLauncher.writeSettings({ model: mModel[1] });
-        this.feishu.replyText(
-          chatId,
-          `✅ CLI 模型已设为 ${mModel[1]}\n（无论什么模型，拉起前都会强制 maxMode=false，不会走 Max 计费）`,
-        );
+        // -max 后缀 = Max 变体模型：cursor-agent 启动时会把 maxMode 改回 true，
+        // 写 false 拦不住（实测账单验证），必须提醒用户换非 max 变体
+        const maxWarn = /-max$/i.test(mModel[1])
+          ? '\n⚠️ 这个模型是 Max 变体（-max 后缀），会按 Max 计费且无法关闭！按次计费套餐建议换非 max 变体（如 claude-fable-5-thinking-xhigh）。'
+          : '';
+        this.feishu.replyText(chatId, `✅ CLI 模型已设为 ${mModel[1]}${maxWarn}`);
       } else {
         this.feishu.replyText(
           chatId,
-          `当前 CLI 模型：${this.cliLauncher.model()}\n设置：/model 模型id（例如 /model claude-fable-5-thinking-max）`,
+          `当前 CLI 模型：${this.cliLauncher.model()}\n设置：/model 模型id（例如 /model claude-fable-5-thinking-xhigh）\n注意别选 -max 后缀的 Max 变体，那会按 Max 计费。`,
         );
       }
       return true;
@@ -770,7 +772,7 @@ class McpFeedbackServer {
     } else {
       this.feishu.replyText(
         chatId,
-        '🚀 CLI 会话已拉起（非交互模式，已强制 maxMode=false，按 1 次请求计费）\n' +
+        '🚀 CLI 会话已拉起（非交互模式）\n' +
           `模型：${this.cliLauncher.model()}\n` +
           `工作目录：${cwd}\n` +
           `任务：${task.length > 100 ? task.slice(0, 100) + '…' : task}\n\n` +

@@ -255,7 +255,7 @@ npm install -g cursor-feedback
 | `/model [模型id]` | 查看 / 设置会话模型（持久化） |
 | `/help` | 查看命令用法 |
 
-- 会话以**非交互模式**运行，拉起前强制写入 `maxMode=false`——按次计费套餐固定只扣 1 次请求，永远不会走 Max 计费。
+- 会话以**非交互模式**运行，默认使用非 Max 模型（`claude-fable-5-thinking-xhigh`），拉起前强制写入 `maxMode=false`。⚠️ 千万别选 `-max` 后缀的模型——那本身就是 Max 变体，不管配置写什么 CLI 都会按 Max 计费。
 - 拉起的 Agent 也通过本插件的反馈卡片与你沟通：需要确认、汇报进展都会推到飞书，直接回复卡片即可。
 - 可在 `~/.cursor-feedback/cli-rules.md` 写自定义规则（如「永远用中文」），每次 `/new` 自动注入。
 - 会话结束（完成 / 异常 / `/stop` / 超 3 小时兜底终止）都会发飞书收尾消息附最终输出。

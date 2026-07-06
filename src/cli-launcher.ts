@@ -2,11 +2,12 @@
  * CLI 会话拉起器：飞书 /new 命令 → 非交互模式 spawn cursor-agent。
  *
  * 关键设计（均来自实测结论，勿随意更改）：
- * - 必须用非交互 print 模式（-p）：交互式 TUI 会话对 Fable 5 会强制回到 Max Mode，
- *   次数计费的套餐一次对话被扣 10+ 次；非交互模式尊重 cli-config.json 的 maxMode=false，
- *   固定只扣 1 次请求。
+ * - 默认模型必须是**非 Max 变体**（见 DEFAULT_MODEL 注释）：`-max` 后缀模型本身就是
+ *   Max 变体，CLI 会按模型真实属性把 maxMode 改回 true，写 false 拦不住；单轮会话
+ *   碰巧只扣 1 次会掩盖问题，多轮直接扣 40+。非 Max 模型不管多少轮都扣 1 次。
+ * - 必须用非交互 print 模式（-p）：交互式 TUI 会持久改写 cli-config.json 的模型选择。
  * - spawn 前每次都强制把 ~/.cursor/cli-config.json 写成 maxMode=false + 目标模型：
- *   交互式会话会把这个文件改回 max，不能信任上次的残留状态。
+ *   兜底防御，不能信任上次的残留状态。
  * - CLI 不读 IDE 的全局 User Rules，用户的个人规则要显式注入到 prompt 里
  *   （从 ~/.cursor-feedback/cli-rules.md 读取，没有则只注入 cursor-feedback 沟通协议）。
  * - 必须带 --approve-mcps：MCP 批准状态按工作目录落盘，headless 会话无法弹批准框，
@@ -61,8 +62,14 @@ interface CliSessionLock {
 }
 
 export class CliLauncher {
-  /** 默认模型：实测非交互模式下该模型 + maxMode=false 固定扣 1 次请求 */
-  private static readonly DEFAULT_MODEL = 'claude-fable-5-thinking-max';
+  /**
+   * 默认模型：必须用非 Max 变体（2026-07-06 账单实测）。新版 CLI 里 `-max` 后缀
+   * = Max 变体（如 claude-fable-5-thinking-max 显示名就是 "Fable 5 1M Max Thinking"），
+   * 会话启动时 CLI 会按模型真实属性把 cli-config.json 改回 maxMode=true 并写入
+   * selectedModel（effort=max），一次会话扣了 40+ 次。thinking-xhigh 是非 Max 的
+   * 最高档，固定扣 1 次。
+   */
+  private static readonly DEFAULT_MODEL = 'claude-fable-5-thinking-xhigh';
   /** 会话时长兜底：防止无人回复的 headless 会话无限续期挂着 */
   private static readonly SESSION_MAX_MS = 3 * 60 * 60 * 1000;
   /** stdout/stderr 只保留尾部，防止长会话把内存吃爆 */
@@ -338,8 +345,11 @@ export class CliLauncher {
     cfg.maxMode = false;
     cfg.model = { modelId: this.model(), maxMode: false };
     cfg.hasChangedDefaultModel = true;
+    // 清掉 CLI 自己写入的 selectedModel（Max 模型会话会留下 effort=max 的残留，
+    // 不删的话下次会话可能沿用 Max 档计费）
+    delete cfg.selectedModel;
     fs.writeFileSync(p, JSON.stringify(cfg, null, 2));
-    clog(`cli-config.json 已写入 maxMode=false, model=${this.model()}`);
+    clog(`cli-config.json 已写入 maxMode=false, model=${this.model()}，并清除 selectedModel`);
   }
 
   /** 用户自定义注入规则：~/.cursor-feedback/cli-rules.md（可选） */
