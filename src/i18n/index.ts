@@ -84,6 +84,11 @@ export type I18nMessages = {
   daemonNotSupported: string;
   daemonFailed: string;
   daemonWorking: string;
+  diagLabel: string;
+  diagDesc: string;
+  diagExportBtn: string;
+  diagSaved: string;
+  diagOpenAction: string;
   queueSend: string;
   queuedTitle: string;
   queueModeHint: string;
@@ -265,6 +270,11 @@ function getDefaultMessages(): I18nMessages {
     daemonNotSupported: "Not supported on this platform",
     daemonFailed: "Operation failed: {error}",
     daemonWorking: "Working…",
+    diagLabel: "Diagnostics",
+    diagDesc: "Export a diagnostic report (recent logs, environment and sanitized config — secrets are masked) to attach to bug reports.",
+    diagExportBtn: "Export diagnostics",
+    diagSaved: "Diagnostic report saved.",
+    diagOpenAction: "Open",
     queueSend: "Queue Message",
     queuedTitle: "Queued messages",
     queueModeHint: "AI is busy — messages sent now are queued and delivered when it next asks for feedback",

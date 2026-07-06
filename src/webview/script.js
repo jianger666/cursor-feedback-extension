@@ -243,6 +243,11 @@
     daemonStatusText.textContent = i18n.daemonWorking || 'Working…';
     vscode.postMessage({ type: 'toggleDaemon', payload: { enabled: daemonToggle.checked } });
   });
+  // ---------- 诊断包导出 ----------
+  document.getElementById('diagExportBtn').addEventListener('click', () => {
+    vscode.postMessage({ type: 'exportDiagnostics' });
+  });
+
   function updateDaemonUI(s) {
     if (!s) return;
     daemonToggle.disabled = !s.supported;

@@ -221,6 +221,15 @@
         <p id="daemonStatusText" class="feishu-modal__desc feishu-modal__desc--sub"></p>
       </div>
 
+      <!-- 区块③b：诊断信息（导出日志 + 环境 + 脱敏配置，报 bug 用） -->
+      <div class="feishu-section">
+        <span class="feishu-switch__label feishu-switch__label--strong">{{i18n.diagLabel}}</span>
+        <p class="feishu-modal__desc">{{i18n.diagDesc}}</p>
+        <div class="feishu-modal__actions">
+          <button id="diagExportBtn" class="feishu-link" type="button">{{i18n.diagExportBtn}}</button>
+        </div>
+      </div>
+
       <!-- 区块④：飞书通知（推送开关 + 凭证 + 绑定状态） -->
       <div class="feishu-section">
         <label class="feishu-switch">

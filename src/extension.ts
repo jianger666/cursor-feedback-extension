@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as http from 'http';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { execFile } from 'child_process';
 import { loadMessages, getLanguage, I18nMessages } from './i18n';
@@ -347,6 +348,9 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
           break;
         case 'toggleDaemon':
           await this._handleToggleDaemon(!!data.payload?.enabled);
+          break;
+        case 'exportDiagnostics':
+          await this._handleExportDiagnostics();
           break;
         case 'feishuRegisterStart':
           await this._handleFeishuRegisterStart();
@@ -1544,6 +1548,66 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
         payload: { supported: true, installed: !enabled, error: String(e) },
       });
     }
+  }
+
+  /**
+   * 导出诊断包：优先从活跃 server 拿完整报告（含运行时状态）；server 全挂时降级为
+   * 插件本地拼装（正好覆盖「server 起不来」这种最需要日志的场景）。存为 txt 并打开。
+   */
+  private async _handleExportDiagnostics() {
+    let report: string | null = null;
+    const port = this._anyServerPort();
+    if (port) {
+      try {
+        report = await this._httpGet(`http://127.0.0.1:${port}/api/diagnostics`);
+      } catch {
+        report = null;
+      }
+    }
+    if (!report) {
+      report = this._buildLocalDiagnostics();
+    }
+    const def = path.join(
+      os.homedir(),
+      'Downloads',
+      `cursor-feedback-diag-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}.txt`,
+    );
+    const uri = await vscode.window.showSaveDialog({
+      defaultUri: vscode.Uri.file(def),
+      filters: { Text: ['txt'] },
+    });
+    if (!uri) return;
+    await vscode.workspace.fs.writeFile(uri, Buffer.from(report, 'utf-8'));
+    const open = this._t('diagOpenAction');
+    const picked = await vscode.window.showInformationMessage(this._t('diagSaved'), open);
+    if (picked === open) {
+      await vscode.window.showTextDocument(uri);
+    }
+  }
+
+  /** server 全挂时的降级诊断：插件自己读日志文件 + 基本环境信息（不含 server 运行时状态） */
+  private _buildLocalDiagnostics(): string {
+    const parts = [
+      `cursor-feedback 诊断报告（降级模式：没有活跃的 server，运行时状态缺失）  生成于 ${new Date().toISOString()}`,
+      `===== 环境 =====\nextension version: ${vscode.extensions.getExtension('jianger666.cursor-feedback')?.packageJSON?.version || '?'}\nplatform: ${process.platform} (${process.arch})\nvscode: ${vscode.version}`,
+    ];
+    try {
+      const dir = path.join(os.homedir(), '.cursor-feedback', 'logs');
+      const files = fs
+        .readdirSync(dir)
+        .filter((f) => /^\d{4}-\d{2}-\d{2}\.log$/.test(f))
+        .sort()
+        .slice(-2);
+      let text = '';
+      for (const f of files) {
+        text += `===== ${f} =====\n` + fs.readFileSync(path.join(dir, f), 'utf-8');
+      }
+      const MAX = 256 * 1024;
+      parts.push(text.length > MAX ? '…(前文截断)\n' + text.slice(text.length - MAX) : text || '（没有日志文件）');
+    } catch {
+      parts.push('（没有日志文件）');
+    }
+    return parts.join('\n\n') + '\n';
   }
 
   /**

@@ -31,6 +31,7 @@ import { FeishuBridge, FeishuConfig, FeishuInboundReply } from './feishu.js';
 import { CliLauncher, CliSessionResult } from './cli-launcher.js';
 import { KeepAwake } from './keep-awake.js';
 import { installDaemon, uninstallDaemon, daemonStatus, daemonSupported } from './daemon-install.js';
+import { fileLog, readRecentLogs } from './logger.js';
 
 // ⚠️ MCP stdio 协议要求 stdout 只承载 JSON-RPC 消息。第三方库（尤其飞书 SDK 的内置 logger，
 // 输出形如 "[info]: [...]"）会用 console.log/info/debug 往 stdout 打日志，一旦混入就会让
@@ -45,6 +46,7 @@ console.debug = (...args: unknown[]) => console.error(...args);
 function debugLog(message: string) {
   const timestamp = new Date().toISOString();
   console.error(`[${timestamp}] ${message}`);
+  fileLog('mcp', message);
 }
 
 // 包版本真相源：package.json（dist/mcp-server.js 的上一级目录）。读不到时兜底 0.0.0。
@@ -634,14 +636,13 @@ class McpFeedbackServer {
           '· 默认工作目录是主目录；可在任务前指定项目：\n' +
           '  /new /Users/me/proj 帮我修下测试\n' +
           '  /new crm-web 帮我修下测试（项目名唯一时自动匹配到完整路径）\n' +
-          '· 非交互模式 + 强制 maxMode=false，每次会话固定只扣 1 次请求\n' +
           '· AI 需要沟通时会发反馈卡片，直接回复即可；同时只能跑一个会话\n\n' +
           '📁 /projects\n' +
           '列出 Cursor 打开过的项目路径（查路径 / 复制给 /new，也可直接用项目名）\n\n' +
           '🛑 /stop\n' +
           '终止运行中的 CLI 会话（任何窗口拉起的都能停）\n\n' +
           '🧠 /model [模型id]\n' +
-          '查看 / 设置会话模型（持久化；无论选什么模型都不会走 Max 计费）\n\n' +
+          '查看 / 设置会话模型（持久化）\n\n' +
           '❓ /help\n' +
           '看这份帮助\n\n' +
           '💬 不带斜杠的消息照常作为反馈：回复某张卡片就送达那个请求，直接发送则给当前等待中的 AI。',
@@ -777,6 +778,72 @@ class McpFeedbackServer {
       );
     }
     return true;
+  }
+
+  /**
+   * 组装诊断报告（纯文本）。密钥严格脱敏：appSecret 绝不输出，appId 只留前 8 位。
+   * 每个区块独立 try/catch，单块失败不影响整包导出。
+   */
+  private buildDiagnostics(): string {
+    const sections: string[] = [];
+    const add = (title: string, fn: () => string) => {
+      let body: string;
+      try {
+        body = fn();
+      } catch (e) {
+        body = `（读取失败：${e}）`;
+      }
+      sections.push(`===== ${title} =====\n${body}`);
+    };
+    const maskId = (id: string) => (id.length > 8 ? id.slice(0, 8) + '***' : '***');
+    const readJson = (file: string): Record<string, unknown> | null => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(os.homedir(), '.cursor-feedback', file), 'utf-8'));
+      } catch {
+        return null;
+      }
+    };
+
+    add('环境', () =>
+      [
+        `version: ${PKG_VERSION}`,
+        `pid: ${process.pid}  uptimeSec: ${Math.round(process.uptime())}`,
+        `platform: ${process.platform} ${os.release()} (${process.arch})`,
+        `node: ${process.version}`,
+        `daemonMode: ${this.daemonMode}`,
+        `ownerWorkspace: ${this.ownerWorkspace || '(none)'}`,
+        `hasCurrentRequest: ${this.currentRequest !== null}`,
+      ].join('\n'),
+    );
+
+    add('飞书配置（脱敏）', () => {
+      const cfg = readJson('feishu-config.json');
+      if (!cfg) return '（未配置）';
+      const safe = { ...cfg };
+      if (typeof safe.appId === 'string') safe.appId = maskId(safe.appId);
+      if ('appSecret' in safe) safe.appSecret = '***';
+      return JSON.stringify(safe, null, 2);
+    });
+
+    add('飞书绑定（appId 脱敏）', () => {
+      const bind = readJson('feishu-bind.json');
+      if (!bind) return '（无）';
+      return JSON.stringify(
+        Object.fromEntries(Object.entries(bind).map(([k, v]) => [maskId(k), v])),
+        null,
+        2,
+      );
+    });
+
+    add('通用设置 settings.json', () => JSON.stringify(readJson('settings.json') ?? '（无）'));
+    add('CLI 设置 cli.json', () => JSON.stringify(readJson('cli.json') ?? '（无）'));
+    add('CLI 会话锁', () => JSON.stringify(readJson('cli-session.lock') ?? '（无活跃会话）'));
+
+    add('常驻服务状态', () => JSON.stringify(daemonStatus(), null, 2));
+
+    add('最近日志（今天 + 昨天，尾部截断）', () => readRecentLogs());
+
+    return `cursor-feedback 诊断报告  生成于 ${new Date().toISOString()}\n\n` + sections.join('\n\n') + '\n';
   }
 
   /** CLI 会话结束的收尾回执：把 agent 的最终输出（尾部）发回飞书 */
@@ -2278,6 +2345,14 @@ class McpFeedbackServer {
               res.end('{}');
             }
           });
+          return;
+        }
+
+        // 诊断包：版本/环境/配置（脱敏）/守护状态/会话锁 + 最近日志尾部，纯文本一把梭。
+        // 插件面板「导出诊断包」按钮请求这里；轻量起见不打 zip，一个 txt 就够排查。
+        if (req.method === 'GET' && req.url === '/api/diagnostics') {
+          res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+          res.end(this.buildDiagnostics());
           return;
         }
 

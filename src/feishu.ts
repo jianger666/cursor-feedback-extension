@@ -15,9 +15,11 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { fileLog } from './logger.js';
 
 function flog(message: string) {
   console.error(`[${new Date().toISOString()}] [feishu] ${message}`);
+  fileLog('feishu', message);
 }
 
 export interface FeishuConfig {

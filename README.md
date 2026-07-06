@@ -291,6 +291,10 @@ Normally the server process is spawned by Cursor, so closing Cursor drops the Fe
 - **How**: the current package is copied to `~/.cursor-feedback/daemon/app` (self-contained, immune to npx cache cleanup); registered as a launchd agent on macOS (auto-restart on crash) or a logon scheduled task on Windows.
 - **Keep-awake**: while on AC power the daemon prevents system sleep (macOS `caffeinate -s`; Windows power assertion). On battery it does nothing. Lock screen never affects background processes.
 - **Typical use**: leave the machine plugged in and locked after work; `/new` from your phone anytime.
+
+### Diagnostics export
+
+Server logs are also written to `~/.cursor-feedback/logs/` (daily files, 7-day retention). Hit **Export diagnostics** in the extension's notification settings to save a single report — recent logs, environment and sanitized config (secrets are masked) — to attach to bug reports. Works even when no server is running (falls back to reading log files directly).
 - After upgrading the extension, toggle the switch off/on once to refresh the daemon's copy.
 
 ## 🏗️ Architecture

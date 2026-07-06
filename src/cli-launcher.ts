@@ -16,9 +16,11 @@ import { spawn, execFileSync, ChildProcess } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { fileLog } from './logger.js';
 
 function clog(message: string) {
   console.error(`[${new Date().toISOString()}] [cli-launcher] ${message}`);
+  fileLog('cli-launcher', message);
 }
 
 /** /model 命令写入的持久化设置（~/.cursor-feedback/cli.json，跨进程/重启共享） */
