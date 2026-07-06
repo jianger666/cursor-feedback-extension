@@ -147,7 +147,7 @@
     "watch": "tsc -watch -p ./",
     "lint": "eslint src --ext ts",
     "start:mcp": "node dist/mcp-server.js",
-    "test:smoke": "npm run compile && node scripts/smoke-queue.js",
+    "test:smoke": "npm run compile && node scripts/smoke-queue.js && node scripts/smoke-dup.js",
     "prepublishOnly": "npm run check-changelog && npm run compile",
     "check-changelog": "node scripts/check-changelog.js",
     "release": "standard-version",

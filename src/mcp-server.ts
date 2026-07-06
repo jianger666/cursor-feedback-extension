@@ -120,10 +120,14 @@ class McpFeedbackServer {
     // 全量请求对象：/api/feedback/current 按窗口（workspace）挑请求返回给插件展示用
     request: FeedbackRequest;
     // 等待本请求结果的所有 MCP 调用（首个调用 + 被判定为重复投递而 join 进来的调用）。
-    // 背景：Cursor 客户端/传输层偶发对同一次 tool call 重复投递（实测同 summary 间隔 1 分钟
-    // 连发两次），旧实现把第二次当「新请求」→ cancelStalePending 顶掉第一次 → AI 收到
-    // SUPERSEDED 提前收尾。现在重复投递直接共享同一个等待，结果对所有 waiter 广播。
+    // 背景：Cursor 客户端/传输层偶发对同一次 tool call 重复投递（实测会在某一时刻把进程内
+    // 所有 in-flight 调用各重投一遍，距原投递可晚至 3~8 分钟），旧实现把重投当「新请求」→
+    // cancelStalePending 顶掉原调用 → AI 收到 SUPERSEDED 提前收尾。
+    // 现在重复投递直接共享同一个等待，结果对所有 waiter 广播。
     waiters: Array<(outcome: WaitOutcome) => void>;
+    // 发起本请求的 JSON-RPC 请求 id（同一连接内唯一）。客户端重投若复用同一 id，
+    // 可据此精确识别重复投递，比 summary 内容启发式更可靠。
+    wireId?: string;
   }> = new Map();
 
   // 当前反馈请求
@@ -324,15 +328,18 @@ class McpFeedbackServer {
     });
 
     // 处理工具调用
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    this.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       // AI 发起调用，刷新活动时间，避免被 watchdog 误判为闲置
       this.lastActivityTime = Date.now();
       const { name, arguments: args } = request.params;
+      // JSON-RPC 请求 id（同一连接内唯一）：客户端把同一次 tool call 重复投递时若复用
+      // 同一 id，可据此做精确去重 / 结果重放（比 summary 内容启发式可靠）。
+      const wireKey = extra?.requestId !== undefined ? String(extra.requestId) : undefined;
 
       try {
         switch (name) {
           case 'interactive_feedback':
-            return await this.handleInteractiveFeedback(args);
+            return await this.handleInteractiveFeedback(args, wireKey);
           case 'get_system_info':
             return this.handleGetSystemInfo();
           default:
@@ -353,8 +360,12 @@ class McpFeedbackServer {
 
   /**
    * 处理交互式反馈请求
+   * @param wireKey 本次调用的 JSON-RPC 请求 id（用于重复投递的精确识别与结果重放）
    */
-  private async handleInteractiveFeedback(args: Record<string, unknown> | undefined): Promise<{
+  private async handleInteractiveFeedback(
+    args: Record<string, unknown> | undefined,
+    wireKey?: string,
+  ): Promise<{
     content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
     isError?: boolean;
   }> {
@@ -383,14 +394,29 @@ class McpFeedbackServer {
 
     const requestId = this.generateRequestId();
 
-    // 重复投递识别：同窗口 + 同 summary + 旧请求还很新 → 视为客户端/传输层对同一次调用的
-    // 重复投递（非新一轮），直接 join 旧等待共享结果：不发新卡、不顶旧请求（顶了会让
-    // 先到的那次调用收到 SUPERSEDED、AI 误以为被新会话取代而提前收尾）。
-    const dup = this.findDuplicatePending(projectDir, summary);
+    // 重复投递识别：客户端/传输层会把同一次 tool call 原样重复投递（实测某一时刻把进程内
+    // 所有 in-flight 调用各重投一遍，距原投递可晚至 3~8 分钟，无固定上限）。重复投递必须
+    // join 原等待共享结果，绝不能当新一轮：不发新卡、不顶旧请求——顶了会让原调用收到
+    // SUPERSEDED（AI 误以为被新会话取代而提前收尾），且重投开出的幽灵卡片没人认领，
+    // 用户回复它只会石沉大海。
+    const dup = this.findDuplicatePending(projectDir, summary, timeout, wireKey);
     if (dup) {
-      debugLog(`Duplicate delivery detected for request ${dup.id}; joining its wait instead of superseding`);
+      debugLog(`Duplicate delivery detected (matched by ${dup.via}) for request ${dup.id}; joining its wait instead of superseding`);
       const outcome = await new Promise<WaitOutcome>((res) => dup.waiters.push(res));
+      this.rememberSettledWire(wireKey, outcome, dup.id);
       return this.outcomeToResult(outcome, dup.id);
+    }
+
+    // 迟到的重复投递（原请求已结束）：同 wire id 精确命中已结束请求 → 原样重放当时的结果。
+    // 绝不能开新一轮：原调用早已返回、没人会认领新卡，用户回复只会丢失。
+    // 只按 wire id 匹配、绝不按 summary——AI 超时续期的新一轮常复用同一句 summary，
+    // 按内容重放旧超时会造成「新调用秒收超时 → 立即重调 → 又秒收」的快速空转。
+    if (wireKey) {
+      const settled = this.settledByWire.get(wireKey);
+      if (settled) {
+        debugLog(`Late duplicate delivery (wire id ${wireKey}) for settled request ${settled.requestId}; replaying its outcome`);
+        return this.outcomeToResult(settled.outcome, settled.requestId);
+      }
     }
 
     // 作废上一轮残留的「僵尸」请求：单实例单窗口同时只应有一个活跃反馈请求。
@@ -438,7 +464,8 @@ class McpFeedbackServer {
 
     try {
       // 等待用户反馈
-      const outcome = await this.waitForFeedback(request, timeout * 1000);
+      const outcome = await this.waitForFeedback(request, timeout * 1000, wireKey);
+      this.rememberSettledWire(wireKey, outcome, requestId);
       return this.outcomeToResult(outcome, requestId);
     } catch (error) {
       debugLog(`Error collecting feedback: ${error}`);
@@ -761,23 +788,55 @@ class McpFeedbackServer {
   }
 
   /**
-   * 查找可 join 的「重复投递」等待：同窗口 + 同 summary + 注册时间在 DUP_JOIN_MS 内。
-   * AI 每一轮的 summary 几乎不可能与上一轮一字不差，短窗口内完全相同基本可断定为
-   * 客户端/传输层对同一次 tool call 的重复投递。
+   * 查找可 join 的「重复投递」等待，两级匹配：
+   * 1) wire id 精确匹配：同一条 JSON-RPC 请求（同 id）还在等待 → 必是重复投递；
+   * 2) 内容启发式：同窗口 + 同 summary + 同 timeout，且原请求仍在 pending（覆盖客户端
+   *    重投时换了新 wire id 的情况）。
+   * 内容启发式不设时间窗——旧实现的 90s 窗口被实测击穿（重投可晚至 3~8 分钟，无固定上限）。
+   * 不设窗口是安全的：pending 仍存活 = 原调用尚未返回 = 同一会话不可能已合法开启新一轮；
+   * 不同会话在同一窗口撞出一字不差的 summary + timeout 概率可忽略，即便撞上，
+   * join（双方共享同一份回复）也远比 supersede（悄悄掐掉别人的等待）安全。
    */
-  private static readonly DUP_JOIN_MS = 90_000;
   private findDuplicatePending(
     projectDir: string,
     summary: string,
-  ): { id: string; waiters: Array<(outcome: WaitOutcome) => void> } | null {
+    timeout: number,
+    wireKey?: string,
+  ): { id: string; via: 'wire id' | 'content'; waiters: Array<(outcome: WaitOutcome) => void> } | null {
     const owner = this.normalizePath(projectDir);
     for (const [id, pending] of this.pendingRequests) {
+      if (wireKey !== undefined && pending.wireId === wireKey) {
+        return { id, via: 'wire id', waiters: pending.waiters };
+      }
       if (this.normalizePath(pending.projectDir) !== owner) continue;
       if (pending.request.summary !== summary) continue;
-      if (Date.now() - pending.request.timestamp > McpFeedbackServer.DUP_JOIN_MS) continue;
-      return { id, waiters: pending.waiters };
+      if (pending.request.timeout !== timeout) continue;
+      return { id, via: 'content', waiters: pending.waiters };
     }
     return null;
+  }
+
+  /**
+   * 已结束请求的结果缓存（wire id → 当时的结果）：供「迟到的重复投递」精确重放。
+   * 容量与时效都收紧（feedback 结果可能含 base64 图片，不能无限囤积）。
+   */
+  private settledByWire = new Map<string, { outcome: WaitOutcome; requestId: string; at: number }>();
+  private static readonly SETTLED_WIRE_TTL_MS = 10 * 60 * 1000;
+  private static readonly SETTLED_WIRE_MAX = 20;
+
+  private rememberSettledWire(wireKey: string | undefined, outcome: WaitOutcome, requestId: string) {
+    if (!wireKey) return;
+    const now = Date.now();
+    this.settledByWire.set(wireKey, { outcome, requestId, at: now });
+    for (const [k, v] of this.settledByWire) {
+      if (now - v.at > McpFeedbackServer.SETTLED_WIRE_TTL_MS) this.settledByWire.delete(k);
+    }
+    // Map 按插入序迭代，超限时先淘汰最早的
+    while (this.settledByWire.size > McpFeedbackServer.SETTLED_WIRE_MAX) {
+      const oldest = this.settledByWire.keys().next().value;
+      if (oldest === undefined) break;
+      this.settledByWire.delete(oldest);
+    }
   }
 
   /**
@@ -876,7 +935,7 @@ class McpFeedbackServer {
    * 等待用户反馈：注册 pending 并挂起，结果通过 waiters 广播——
    * 首个调用与后续 join 进来的重复投递调用都会收到同一份结果。
    */
-  private waitForFeedback(request: FeedbackRequest, timeoutMs: number): Promise<WaitOutcome> {
+  private waitForFeedback(request: FeedbackRequest, timeoutMs: number, wireKey?: string): Promise<WaitOutcome> {
     return new Promise<WaitOutcome>((resolve) => {
       const requestId = request.id;
       const projectDir = request.projectDir;
@@ -914,6 +973,7 @@ class McpFeedbackServer {
         remainingMs: timeoutMs,
         request,
         waiters,
+        wireId: wireKey,
       });
 
       // 抢跑兑现：空窗期的面板提交（优先，用户显式点了发送）与飞书暂存消息，
