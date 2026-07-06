@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.4.1](https://github.com/jianger666/cursor-feedback-extension/compare/v2.4.0...v2.4.1) (2026-07-06)
+
+
+### Bug Fixes
+
+* **cli:** CLI 会话全局锁——多窗口/守护多实例并存时 /new /stop 跨实例一致 ([679c3ef](https://github.com/jianger666/cursor-feedback-extension/commit/679c3ef3ce43af768be939d4059a452cd3d20178))
+
 ## [2.4.0](https://github.com/jianger666/cursor-feedback-extension/compare/v2.3.1...v2.4.0) (2026-07-06)
 
 
