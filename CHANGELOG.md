@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [2.5.0](https://github.com/jianger666/cursor-feedback-extension/compare/v2.4.1...v2.5.0) (2026-07-06)
+
+
+### Features
+
+* /help 完整用法说明；全角斜杠／归一化；持久化「发版需用户确认」规则 ([d345b55](https://github.com/jianger666/cursor-feedback-extension/commit/d345b55da22cad9e1a838999f0d58dd36ffa10b2))
+* slash commands case-insensitive + /help command, malformed /model //cwd args no longer fall through to feedback routing ([a4bceeb](https://github.com/jianger666/cursor-feedback-extension/commit/a4bceebb588898c82acb797e8f5abefb7a457550))
+
+
+### Code Refactoring
+
+* **cli:** /new 工作目录简化为「显式指定>主目录」与 IDE 窗口解耦；移除 /cwd；新增 /projects 查项目路径、/new 支持项目名匹配 ([0752a32](https://github.com/jianger666/cursor-feedback-extension/commit/0752a3232de0e712b977f9f01ba988613cd7597c))
+
 ### [2.4.1](https://github.com/jianger666/cursor-feedback-extension/compare/v2.4.0...v2.4.1) (2026-07-06)
 
 
