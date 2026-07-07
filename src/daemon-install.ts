@@ -95,22 +95,27 @@ function copySelf(): void {
     fs.cpSync(src, path.join(app, item), { recursive: true });
   }
 
+  // 依赖来源可能有两处且可同时存在：父级 node_modules（npm 扁平布局的共享依赖）、
+  // pkgRoot/node_modules（源码布局的全部依赖 / npm 版本冲突时的嵌套依赖）。
+  // 必须两处都拷（父级先拷、嵌套后拷覆盖同名），只拷一处会丢依赖导致守护起不来。
   const ownDeps = path.join(pkgRoot, 'node_modules');
   const parentDeps = path.resolve(pkgRoot, '..');
-  let depsSrc: string | null = null;
-  if (fs.existsSync(ownDeps)) {
-    depsSrc = ownDeps;
-  } else if (path.basename(parentDeps) === 'node_modules') {
-    depsSrc = parentDeps;
+  const sources: string[] = [];
+  if (path.basename(parentDeps) === 'node_modules') sources.push(parentDeps);
+  if (fs.existsSync(ownDeps)) sources.push(ownDeps);
+  if (sources.length === 0) throw new Error('找不到依赖 node_modules，无法安装守护');
+  for (const depsSrc of sources) {
+    // 只精确排除 depsSrc 直下的 cursor-feedback 包目录（防套娃拷贝自身）。
+    // 不能按「路径含 /cursor-feedback/」模糊排除：安装路径的上级目录恰好叫
+    // cursor-feedback 时会把所有依赖误排掉，拷出一个空 node_modules。
+    const selfPkg = path.join(depsSrc, 'cursor-feedback');
+    fs.cpSync(depsSrc, path.join(app, 'node_modules'), {
+      recursive: true,
+      dereference: true,
+      force: true,
+      filter: (src) => src !== selfPkg && !src.startsWith(selfPkg + path.sep),
+    });
   }
-  if (!depsSrc) throw new Error('找不到依赖 node_modules，无法安装守护');
-  fs.cpSync(depsSrc, path.join(app, 'node_modules'), {
-    recursive: true,
-    dereference: true,
-    // npm 布局下父级 node_modules 里含 cursor-feedback 自身，跳过避免套娃拷贝
-    filter: (src) => !src.includes(`${path.sep}cursor-feedback${path.sep}`) &&
-      !src.endsWith(`${path.sep}cursor-feedback`),
-  });
   dlog(`包已拷贝到 ${app}`);
 }
 
@@ -278,10 +283,22 @@ function winTaskExists(): boolean {
   }
 }
 
+/** semver 大小比较：a < b 返回 -1，相等 0，a > b 返回 1（只比主.次.补丁数字段） */
+function compareSemver(a: string, b: string): number {
+  const pa = a.split('.').map((x) => parseInt(x, 10) || 0);
+  const pb = b.split('.').map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) < (pb[i] || 0)) return -1;
+    if ((pa[i] || 0) > (pb[i] || 0)) return 1;
+  }
+  return 0;
+}
+
 /**
  * 守护自动升级：已安装的守护是安装时的快照，不会随 npx @latest 走。
- * IDE 里的新版 server 启动时调用这里——发现守护版本与自己不一致就静默重装
+ * IDE 里的新版 server 启动时调用这里——发现守护版本【低于】自己就静默重装
  * （重装会 bootout 旧守护、拷贝新包、重新拉起），用户零操作。
+ * 只升不降：某个窗口 pin 了旧版包时绝不能把新守护降级回去（否则新旧窗口互相拉锯）。
  *
  * 并发防护：多窗口 = 多个 server 同时启动，重装涉及删目录 + 整树拷贝，撞上会互相
  * 写坏。用 wx 独占锁串行化，抢不到的直接跳过（反正有人在装）；残锁超 10 分钟视为
@@ -292,7 +309,8 @@ function winTaskExists(): boolean {
 export function upgradeDaemonIfOutdated(currentVersion: string): boolean {
   try {
     const st = daemonStatus();
-    if (!st.installed || !st.installedVersion || st.installedVersion === currentVersion) {
+    // 只在守护版本严格低于当前版本时才重装（防止 pin 旧版的窗口把新守护降级）
+    if (!st.installed || !st.installedVersion || compareSemver(st.installedVersion, currentVersion) >= 0) {
       return false;
     }
     const lock = path.join(daemonRoot(), 'upgrade.lock');

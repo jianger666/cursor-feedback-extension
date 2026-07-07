@@ -176,6 +176,12 @@ async function main() {
     const r2 = upgrade(pkgVersion);
     check('同版本时跳过', r2.did === false);
 
+    // 守护比当前版本更新（如别的窗口 pin 了旧版包）→ 绝不降级
+    fs.writeFileSync(appPkg, JSON.stringify({ ...pkg, version: '99.0.0' }));
+    const rDown = upgrade(pkgVersion);
+    check('守护版本更新时不降级', rDown.did === false);
+    check('守护版本保持 99.0.0 未被覆盖', rDown.st.installedVersion === '99.0.0');
+
     // 新鲜的并发锁存在 → 跳过；过期残锁（>10 分钟）→ 照常升级
     fs.writeFileSync(appPkg, JSON.stringify({ ...pkg, version: '0.0.2' }));
     const lock = path.join(tmpHome, '.cursor-feedback', 'daemon', 'upgrade.lock');

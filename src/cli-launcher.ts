@@ -110,10 +110,16 @@ export class CliLauncher {
   private static pidLooksLikeAgent(pid: number): boolean {
     try {
       if (process.platform === 'win32') {
-        const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
-          encoding: 'utf-8',
-        });
-        return /cursor-agent|node|cmd\.exe/i.test(out);
+        // 查完整命令行而不是进程名：会话进程是 cmd.exe 转发拉起的，进程名只会是
+        // cmd.exe / node.exe——按名字匹配等于放行所有 node 进程，pid 复用后会误杀
+        // 用户无关进程（如 dev server）。命令行含 cursor-agent 才算真命中。
+        const out = execFileSync(
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-Command',
+           `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
+          { encoding: 'utf-8' },
+        );
+        return /cursor-agent/i.test(out);
       }
       const out = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf-8' });
       return /cursor-agent/i.test(out);
@@ -290,7 +296,17 @@ export class CliLauncher {
         if (fs.existsSync(p)) return p;
       }
     }
-    return 'cursor-agent'; // 最后交给 PATH 解析，spawn error 时报错提示
+    // 常见安装位都没有 → 查 PATH（which/where）。真找不到时返回 null，
+    // 让 start() 给出「怎么装」的友好提示，而不是晦涩的 spawn ENOENT
+    try {
+      const probe = process.platform === 'win32' ? 'where' : 'which';
+      const out = execFileSync(probe, ['cursor-agent'], { encoding: 'utf-8' }).trim();
+      const first = out.split(/\r?\n/)[0];
+      if (first) return first;
+    } catch {
+      // PATH 里也没有
+    }
+    return null;
   }
 
   /**
@@ -374,7 +390,12 @@ export class CliLauncher {
     const bin = this.findBinary();
     if (!bin) {
       this.releaseLock();
-      return '找不到 cursor-agent，可通过环境变量 CURSOR_AGENT_PATH 指定路径。';
+      return (
+        '这台电脑还没安装 Cursor CLI（cursor-agent）。\n' +
+        '安装方法：在电脑终端执行 curl https://cursor.com/install -fsS | bash\n' +
+        '（Windows 用 PowerShell：irm https://cursor.com/install.ps1 | iex）\n' +
+        '装好后重新 /new 即可；装在非默认位置时可用环境变量 CURSOR_AGENT_PATH 指定路径。'
+      );
     }
 
     const workDir = fs.existsSync(cwd) ? cwd : os.homedir();
@@ -434,7 +455,12 @@ export class CliLauncher {
     child.stdout?.on('data', (chunk: Buffer) => { stdout = append(stdout, chunk); });
     child.stderr?.on('data', (chunk: Buffer) => { stderr = append(stderr, chunk); });
 
+    // spawn 失败时 Node 会先后触发 error 和 close 两个事件（实测证实），
+    // 不加防重标志 finish 会跑两次 → 用户在飞书收到两条收尾消息
+    let finished = false;
     const finish = (code: number | null) => {
+      if (finished) return;
+      finished = true;
       clearTimeout(killTimer);
       const elapsedMs = Date.now() - this.startedAt;
       // 跨实例 /stop 会在锁上打 stopRequested 标记再杀进程，这里一并算「主动终止」

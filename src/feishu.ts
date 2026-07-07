@@ -508,7 +508,24 @@ export class FeishuBridge {
     files: string[],
   ): void {
     const key = chatId || '_';
-    const existing = this.inboundBuffer.get(key);
+    let existing = this.inboundBuffer.get(key);
+    // 用户在合并窗口内先后回复了两张不同卡片：两条是给不同请求的独立回复，
+    // 绝不能合并（旧实现会丢掉第二条的 parentId、两条都窜进第一张卡片）。
+    // 仅当两条都显式带 parentId 且不同才拆开结算；「无 → 有」维持原合并行为
+    // （飞书图文拆条时部分分片可能不带 parent_id，不能误拆）。
+    if (existing && existing.parentId && parentId && existing.parentId !== parentId) {
+      clearTimeout(existing.timer);
+      this.inboundBuffer.delete(key);
+      this.onReply?.({
+        parentId: existing.parentId,
+        text: existing.texts.join('\n').trim(),
+        chatId,
+        messageId: existing.lastMessageId,
+        images: existing.images,
+        files: existing.files,
+      });
+      existing = undefined;
+    }
     if (existing) clearTimeout(existing.timer);
     const buf = existing || {
       parentId: null as string | null,

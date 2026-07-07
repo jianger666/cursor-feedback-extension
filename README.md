@@ -247,6 +247,7 @@ Send these directly in the bot chat:
 | `/new /abs/path task description` | Launch in an explicit working directory |
 | `/new project-name task description` | Launch in a project Cursor has opened before (unique folder-name match) |
 | `/projects` | List project paths Cursor has opened (to look up / copy into `/new`) |
+| `/status` | Show the running CLI session (task, elapsed time, model) |
 | `/stop` | Terminate the running CLI session |
 | `/model [modelId]` | Show / set the session model (persisted) |
 | `/help` | Show command usage |

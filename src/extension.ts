@@ -872,8 +872,13 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
     project_directory: string;
   }) {
     // 提交到「当前请求所属」的端口：请求与端口强绑定，绝不能退回 basePort——
-    // 多项目同时触发时 basePort 可能是别的项目的 server，会得到 "Request not found"
-    const port = this._currentRequestPort || this._activePort || this._basePort;
+    // 多项目同时触发时 basePort 可能是别的项目的 server，会得到 "Request not found"。
+    // 两个端口都被抖动置空时明确报错让用户重试（下一秒轮询会找回端口），绝不瞎提交。
+    const port = this._currentRequestPort || this._activePort;
+    if (!port) {
+      vscode.window.showErrorMessage(this._i18n.submitFailed + ': ' + this._i18n.cannotConnectMCP);
+      return;
+    }
 
     try {
       const response = await this._httpPost(
@@ -1192,7 +1197,9 @@ class FeedbackViewProvider implements vscode.WebviewViewProvider {
   private async _handleTogglePause(payload: { requestId?: string; paused?: boolean }) {
     const requestId = payload?.requestId;
     if (!requestId || typeof payload?.paused !== 'boolean') return;
-    const port = this._currentRequestPort || this._activePort || this._basePort;
+    // 同 _handleFeedbackSubmit：绝不回退 basePort（可能是别的项目的 server）
+    const port = this._currentRequestPort || this._activePort;
+    if (!port) return; // 端口抖动瞬间：静默跳过，倒计时照常走，用户可再点
     try {
       const response = await this._httpPost(
         `http://127.0.0.1:${port}/api/feedback/pause`,

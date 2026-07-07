@@ -518,7 +518,7 @@ class McpFeedbackServer {
 
       // 斜杠命令优先于反馈路由：用户显式输入命令时不应被当成对某张卡片的回复或排队消息。
       // 大小写不敏感：手机输入法常自动把句首字母大写（/New），必须容错。
-      if (/^\s*[/／](new|stop|model|cwd|help|projects)\b/i.test(text) && this.handleCliCommand(text, chatId)) return;
+      if (/^\s*[/／](new|stop|model|cwd|help|projects|status)\b/i.test(text) && this.handleCliCommand(text, chatId)) return;
 
       if (parentId) {
         // 用户「回复」了某条卡片 → 用 parent_id 精确路由
@@ -618,6 +618,7 @@ class McpFeedbackServer {
    * - /new [目录或项目名] 任务描述：拉起 headless CLI 会话（非交互模式）。
    *   工作目录刻意保持简单：显式指定 > 主目录，与当前开着哪些 IDE 窗口无关。
    * - /projects：列出 Cursor 打开过的项目路径（供手机上查路径 / 复制给 /new）
+   * - /status：查看当前 CLI 会话状态
    * - /stop：终止运行中的 CLI 会话
    * - /model [模型id]：查看 / 设置 CLI 会话模型（持久化）
    */
@@ -639,10 +640,12 @@ class McpFeedbackServer {
           '· AI 需要沟通时会发反馈卡片，直接回复即可；同时只能跑一个会话\n\n' +
           '📁 /projects\n' +
           '列出 Cursor 打开过的项目路径（查路径 / 复制给 /new，也可直接用项目名）\n\n' +
+          '🏃 /status\n' +
+          '查看当前 CLI 会话状态（任务、已运行时长、模型）\n\n' +
           '🛑 /stop\n' +
           '终止运行中的 CLI 会话（任何窗口拉起的都能停）\n\n' +
           '🧠 /model [模型id]\n' +
-          '查看 / 设置会话模型（持久化）\n\n' +
+          '查看 / 设置会话模型（持久化），Max 变体也可以随意选\n\n' +
           '❓ /help\n' +
           '看这份帮助\n\n' +
           '💬 不带斜杠的消息照常作为反馈：回复某张卡片就送达那个请求，直接发送则给当前等待中的 AI。',
@@ -671,6 +674,20 @@ class McpFeedbackServer {
         this.feishu.replyText(chatId, '🛑 正在终止 CLI 会话…结束后我会再发一条收尾消息。');
       } else {
         this.feishu.replyText(chatId, '当前没有运行中的 CLI 会话。');
+      }
+      return true;
+    }
+
+    if (/^\/status\b/i.test(text)) {
+      if (this.cliLauncher.isRunning()) {
+        this.feishu.replyText(
+          chatId,
+          `🏃 CLI 会话运行中：${this.cliLauncher.describe()}\n` +
+            `模型：${this.cliLauncher.model()}\n` +
+            'AI 需要沟通时会发反馈卡片；发 /stop 可终止。',
+        );
+      } else {
+        this.feishu.replyText(chatId, '当前没有运行中的 CLI 会话。发 /new 任务描述 可拉起一个。');
       }
       return true;
     }
@@ -767,11 +784,11 @@ class McpFeedbackServer {
     } else {
       this.feishu.replyText(
         chatId,
-        '🚀 CLI 会话已拉起（非交互模式）\n' +
+        '🚀 CLI 会话已拉起\n' +
           `模型：${this.cliLauncher.model()}\n` +
           `工作目录：${cwd}\n` +
           `任务：${task.length > 100 ? task.slice(0, 100) + '…' : task}\n\n` +
-          'AI 需要和你沟通时会发反馈卡片，直接回复卡片即可；发 /stop 可随时终止。',
+          'AI 需要和你沟通时会发反馈卡片，直接回复卡片即可。\n随时可发 /status 看进度、/stop 终止。',
       );
     }
     return true;
@@ -1355,6 +1372,15 @@ class McpFeedbackServer {
         forProjectDir: forProjectDir ?? prev.forProjectDir,
       };
     } else {
+      // 覆盖别的会话（chatId 不同）的未过期暂存时，先给旧消息回执「未送达」——
+      // 静默覆盖会让旧消息连过期提示都收不到（定时器随即被重置）
+      if (prev && prev.chatId !== chatId && Date.now() - prev.at <= prev.ttlMs) {
+        this.feishu.replyToMessage(
+          prev.messageId,
+          prev.chatId,
+          '⚠️ 消息未能送达 AI（已被更新的消息顶替）。需要的话请待 AI 回复后重新发送一次。',
+        );
+      }
       this.stashedInbound = { text, chatId, images, files, at: Date.now(), messageId, ttlMs, forProjectDir };
     }
     this.armStashExpiryNotice();

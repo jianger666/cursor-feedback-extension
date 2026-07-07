@@ -157,17 +157,32 @@ async function main() {
     check('URI 编码路径被正确解码', projects.includes(projB) && projects.includes(projA));
   }
 
-  console.log('C. 二进制不存在 → 走 error 收尾而不是抛异常');
+  console.log('C. 二进制不存在 → start 同步返回安装指引（不再走晦涩的 spawn error）');
   {
     process.env.CURSOR_AGENT_PATH = path.join(tmpHome, 'no-such-binary');
+    const savedPath = process.env.PATH;
+    process.env.PATH = tmpHome; // 清空 PATH，防止 which 命中真机的 cursor-agent
     const launcher = new CliLauncher();
+    const err = launcher.start('任务', tmpHome, () => {});
+    check('start 同步返回错误说明', typeof err === 'string' && err.length > 0);
+    check('错误说明含安装指引', typeof err === 'string' && err.includes('cursor.com/install'));
+    check('失败后未持锁（可重试）', !launcher.isRunning());
+    process.env.PATH = savedPath;
+  }
+
+  console.log('D. 收尾回调只触发一次（error 与 close 双事件防重）');
+  {
+    // 假 agent 是有效脚本但立即退出非 0：close 一定触发；再验证多次事件下 onDone 只回调一次
+    writeFakeAgent('exit 7');
+    const launcher = new CliLauncher();
+    let doneCount = 0;
     const result = await new Promise((resolve) => {
-      const err = launcher.start('任务', tmpHome, resolve);
-      // CURSOR_AGENT_PATH 不存在时回退 ~/.local/bin 或 PATH，spawn error 异步走 onDone
-      check('start 未同步抛错', err === null || typeof err === 'string');
-      if (err !== null) resolve({ code: null, output: '', errorOutput: err, stopped: false, timedOut: false, elapsedMs: 0 });
+      const err = launcher.start('任务', tmpHome, (r) => { doneCount++; resolve(r); });
+      check('启动成功', err === null);
     });
-    check('失败会话有错误信息', result.code !== 0 && (result.errorOutput.length > 0 || result.code === null));
+    await new Promise((r) => setTimeout(r, 400));
+    check('onDone 只回调一次', doneCount === 1);
+    check('退出码正确传递', result.code === 7);
   }
 
   fs.rmSync(tmpHome, { recursive: true, force: true });
