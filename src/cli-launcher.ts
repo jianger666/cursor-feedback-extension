@@ -339,12 +339,24 @@ export class CliLauncher {
     }
   }
 
+  private static cliConfigPath(): string {
+    return path.join(os.homedir(), '.cursor', 'cli-config.json');
+  }
+
+  /** 配置里是否存在会触发 Max 计费的状态（两个独立触发源，任一命中即危险） */
+  private static hasMaxResidue(cfg: Record<string, unknown>): boolean {
+    if (cfg.maxMode === true) return true;
+    const sel = cfg.selectedModel as { parameters?: Array<{ id?: string; value?: string }> } | undefined;
+    if (sel?.parameters?.some((p) => p?.id === 'effort' && p?.value === 'max')) return true;
+    return false;
+  }
+
   /**
-   * spawn 前强制写 cli-config.json：maxMode=false + 目标模型。
-   * 每次都写——交互式会话会把它改回 max，残留状态不可信。
+   * spawn 前强制写 cli-config.json：maxMode=false + 目标模型 + 删除 selectedModel。
+   * 每次都写——上次会话（含用户在终端手动跑的）会留下残留，状态不可信。
    */
   private ensureMaxModeOff(): void {
-    const p = path.join(os.homedir(), '.cursor', 'cli-config.json');
+    const p = CliLauncher.cliConfigPath();
     let cfg: Record<string, unknown> = {};
     try {
       cfg = JSON.parse(fs.readFileSync(p, 'utf-8'));
@@ -359,6 +371,29 @@ export class CliLauncher {
     delete cfg.selectedModel;
     fs.writeFileSync(p, JSON.stringify(cfg, null, 2));
     clog(`cli-config.json 已写入 maxMode=false, model=${this.model()}，并清除 selectedModel`);
+  }
+
+  /**
+   * 会话运行期间的配置守护：每秒检查 cli-config.json，一旦出现 Max 残留立即改回干净状态。
+   * 动机：spawn 前的清理只保证「启动瞬间」干净；会话运行中 CLI 自己会把当前模型写回
+   * selectedModel（-max 模型就是 effort=max），若 CLI 存在断线重连等重读配置的路径，
+   * 残留可能被中途拾取。守护把脏窗口压缩到 ~1s 内，兜住这类未知重读时机。
+   * 只在「危险」时才写（maxMode=true 或 effort=max），非 Max 状态一律不动，
+   * 避免与 CLI 的正常写回互相打架。
+   */
+  private startConfigGuard(): NodeJS.Timeout {
+    const p = CliLauncher.cliConfigPath();
+    return setInterval(() => {
+      try {
+        const cfg = JSON.parse(fs.readFileSync(p, 'utf-8')) as Record<string, unknown>;
+        if (CliLauncher.hasMaxResidue(cfg)) {
+          this.ensureMaxModeOff();
+          clog('配置守护：检测到 Max 残留被写回，已立即清除');
+        }
+      } catch {
+        // 文件正被写入（半包）或暂不可读：跳过本轮，下一秒再查
+      }
+    }, 1000);
   }
 
   /** 用户自定义注入规则：~/.cursor-feedback/cli-rules.md（可选） */
@@ -474,12 +509,15 @@ export class CliLauncher {
       clog('会话超过时长上限，强制终止');
       CliLauncher.killTree(child, 'SIGKILL');
     }, CliLauncher.SESSION_MAX_MS);
+    // 会话全程守护 cli-config.json，Max 残留一出现就清（防 CLI 中途重读配置拾取残留）
+    const configGuard = this.startConfigGuard();
 
     child.stdout?.on('data', (chunk: Buffer) => { stdout = append(stdout, chunk); });
     child.stderr?.on('data', (chunk: Buffer) => { stderr = append(stderr, chunk); });
 
     const finish = (code: number | null) => {
       clearTimeout(killTimer);
+      clearInterval(configGuard);
       const elapsedMs = Date.now() - this.startedAt;
       // 跨实例 /stop 会在锁上打 stopRequested 标记再杀进程，这里一并算「主动终止」
       const lockAtFinish = this.readLock();
