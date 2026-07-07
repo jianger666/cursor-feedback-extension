@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.7.1](https://github.com/jianger666/cursor-feedback-extension/compare/v2.7.0...v2.7.1) (2026-07-07)
+
+
+### Features
+
+* **cli:** 会话期配置守护——每秒监测 cli-config.json，Max 残留（maxMode=true 或 effort=max）一出现立即清除，兜住 CLI 断线重连等中途重读配置的路径 ([2fc4133](https://github.com/jianger666/cursor-feedback-extension/commit/2fc413388e1d7d230fc5b225ddbd45e094a95537))
+* **cli:** 配置守护升级为 fs.watch 事件监听（毫秒级响应）+ 1s 轮询兜底，监听目录防原子写替换丢失目标 ([895387c](https://github.com/jianger666/cursor-feedback-extension/commit/895387ce4ad27bb8a344ed6e56fa01b851ee2729))
+
+
+### Bug Fixes
+
+* **cli:** headless 会话 MCP 加载修复——spawn 带 --approve-mcps；mcp.json 非字符串 env 归一化（否则 CLI 静默忽略整个文件） ([1e24435](https://github.com/jianger666/cursor-feedback-extension/commit/1e2443536278a82912ab7557bc1aa52d69762e43))
+* **cli:** 按用户反馈去掉 -max 模型告警文案（清理机制下 -max 也正常计 1 次）；补充残留与 --model 优先级实验结论 ([cf9c520](https://github.com/jianger666/cursor-feedback-extension/commit/cf9c5203cce9a30e911399536de236b4edb26d7c))
+* **cli:** 默认模型改为非 Max 变体 xhigh——-max 后缀模型 CLI 会强制按 Max 计费（maxMode=false 拦不住），并清除 selectedModel 残留、/model 设 -max 时告警 ([29516aa](https://github.com/jianger666/cursor-feedback-extension/commit/29516aaf27c6e0666e3beed7375dbf03a481810b))
+
+
+### Documentation
+
+* **cli:** 修正 Max 计费根因注释——账单证实是 selectedModel(effort=max) 残留导致后续会话按 Max 跑，而非模型属性不可关 ([4d389cb](https://github.com/jianger666/cursor-feedback-extension/commit/4d389cb8882e192a38dd85b01cf4c4fe34592384))
+* **cli:** 补充 Max 计费机制实测结论——CLI 启动约 5s 即持久化 selectedModel，计费档取决于启动前文件状态（文件监视实验验证） ([5a1710d](https://github.com/jianger666/cursor-feedback-extension/commit/5a1710db95d13d5971e6ff7dbfd0eb71699d05ac))
+* 定位收敛为 Cursor 专属——移除「任意 MCP host」章节与相关表述 ([ef069ea](https://github.com/jianger666/cursor-feedback-extension/commit/ef069ea73607a7f5cbbce87a091ded6bdb442829))
+
 ## [2.7.0](https://github.com/jianger666/cursor-feedback-extension/compare/v2.6.0...v2.7.0) (2026-07-06)
 
 
