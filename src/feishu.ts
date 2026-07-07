@@ -763,6 +763,22 @@ export class FeishuBridge {
     }
   }
 
+  /**
+   * 超时续期改绑：把上一轮（刚超时）请求的卡片挪给新一轮请求，不发新卡。
+   * 用户对这张卡片的回复会经 resolveParent 直接路由到新请求。
+   * 返回 false 表示旧请求没有卡片（发送失败过 / 已被更早的续期改绑走），调用方应正常发新卡。
+   */
+  rebindCard(oldRequestId: string, newRequestId: string, summary: string, projectDir: string): boolean {
+    const messageId = this.requestToCard.get(oldRequestId);
+    if (!messageId) return false;
+    this.requestToCard.delete(oldRequestId);
+    this.cardToRequest.set(messageId, newRequestId);
+    this.requestToCard.set(newRequestId, messageId);
+    this.requestProjects.set(newRequestId, projectDir);
+    this.pendingSummaries.set(newRequestId, { summary, projectDir });
+    return true;
+  }
+
   /** 用 parent_id 反查 requestId（命中返回 requestId，否则 null） */
   resolveParent(parentId: string | null): string | null {
     if (!parentId) return null;

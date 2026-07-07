@@ -66,8 +66,14 @@ interface FeedbackRequest {
   id: string;
   summary: string;
   projectDir: string;
+  /** 本轮实际等待窗口（秒）。headless 主机下可能被 clamp（< requestedTimeoutS） */
   timeout: number;
   timestamp: number;
+  /** AI/环境变量请求的原始等待时长（秒，动态值，未 clamp） */
+  requestedTimeoutS: number;
+  /** 续期链起点时刻：本轮若是超时续期（同窗口同 summary 重调）则继承上一轮的起点，
+   *  用于「窗口被 clamp 时把单次长等待翻译成 N 轮短等待」后仍保住原始总时长语义 */
+  chainStartAt: number;
 }
 
 /**
@@ -102,6 +108,21 @@ type WaitOutcome =
  * MCP Feedback Server
  */
 class McpFeedbackServer {
+  /**
+   * 是否运行在 headless 主机下（cursor-agent CLI 等非 IDE 宿主）。
+   * IDE（Cursor/VS Code）拉起的 MCP 进程必带 VSCODE_PID / VSCODE_IPC_HOOK 等环境变量，
+   * CLI 拉起的没有（2026-07 实测对比两类进程的完整 env 确认）。
+   */
+  private static readonly HEADLESS_HOST = !process.env.VSCODE_PID && !process.env.VSCODE_IPC_HOOK;
+  /**
+   * headless 主机下单次等待窗口上限（秒）。cursor-agent 对每次 MCP 工具调用有 60s 硬超时
+   *（内嵌 MCP SDK 的默认 timeout，callTool 不传 options、无配置可改、不认 progress 重置），
+   * 等待必须压在 60s 内结束，留 10s 余量给传输与调度。长等待由续期循环补足。
+   * 可用 MCP_FEEDBACK_HEADLESS_MAX_WAIT_S 覆盖（CLI 未来放宽超时 / 测试加速用）。
+   */
+  private static readonly HEADLESS_MAX_WAIT_S =
+    Number(process.env.MCP_FEEDBACK_HEADLESS_MAX_WAIT_S || '') || 50;
+
   private server: Server;
   private httpServer: http.Server | null = null;
   private port: number;
@@ -170,8 +191,12 @@ class McpFeedbackServer {
    * 都应暂存并续接到下一轮，而不是报「Request not found / 已结束」把用户内容丢掉。
    */
   private static readonly REJOIN_TTL_MS = 15000;
-  /** 最近超时结束的请求（id → 归属窗口/时刻），供面板提交与飞书旧卡片回复「续接」下一轮 */
-  private recentlyTimedOut = new Map<string, { projectDir: string; at: number }>();
+  /** 最近超时结束的请求（id → 归属窗口/时刻/摘要/续期链信息），供面板提交与飞书旧卡片回复
+   *  「续接」下一轮，以及超时续期时新一轮「改绑旧卡片 + 继承续期链起点」（summary 判断内容未变） */
+  private recentlyTimedOut = new Map<
+    string,
+    { projectDir: string; at: number; summary: string; chainStartAt: number; requestedTimeoutS: number }
+  >();
   /** 面板在超时空窗内提交的反馈：暂存到下一轮 pending 注册时立即兑现 */
   private panelStash: { feedback: FeedbackResponse; projectDir: string; at: number } | null = null;
   /**
@@ -404,7 +429,16 @@ class McpFeedbackServer {
     // 超时时间优先级：环境变量 > 工具参数 > 默认值（300秒）
     // 这样用户配置的环境变量永远生效，不会被 AI 覆盖
     const envTimeout = process.env.MCP_FEEDBACK_TIMEOUT ? parseInt(process.env.MCP_FEEDBACK_TIMEOUT, 10) : null;
-    const timeout = envTimeout || (args?.timeout as number) || 300;
+    const requestedTimeout = envTimeout || (args?.timeout as number) || 300;
+    // headless 主机（cursor-agent CLI 等非 IDE 宿主）对单次 MCP 工具调用有 60s 硬超时
+    //（MCP SDK 默认值；CLI 调 callTool 不传 options，无环境变量可改，也不认 progress 续命，
+    // 实测 2026-07 版本反编译确认）。等待窗口必须压进 60s，把「一次长等待」翻译成
+    // 「N 轮短等待」：requestedTimeout 是动态值（AI 每轮可传不同数），总时长语义由
+    // 续期链（chainStartAt）保住——见 outcomeToResult 的超时分支；
+    // 续期轮改绑旧卡片（rebindCard），用户飞书上不会被刷屏。
+    const timeout = McpFeedbackServer.HEADLESS_HOST
+      ? Math.min(requestedTimeout, McpFeedbackServer.HEADLESS_MAX_WAIT_S)
+      : requestedTimeout;
 
     const requestId = this.generateRequestId();
 
@@ -453,6 +487,10 @@ class McpFeedbackServer {
       );
     }
     
+    // 续期识别：同窗口 + 同 summary 的上一轮刚超时 → 本轮是超时续期的下一跳，
+    // 继承续期链起点（保住动态 requestedTimeout 的总时长语义）并改绑旧卡片（不刷屏）。
+    const renewal = this.findRenewalSource(projectDir, summary);
+
     // 创建反馈请求
     const request: FeedbackRequest = {
       id: requestId,
@@ -460,6 +498,8 @@ class McpFeedbackServer {
       projectDir,
       timeout,
       timestamp: Date.now(),
+      requestedTimeoutS: requestedTimeout,
+      chainStartAt: renewal?.chainStartAt ?? Date.now(),
     };
     this.currentRequest = request;
 
@@ -470,10 +510,16 @@ class McpFeedbackServer {
     debugLog(`Waiting for VS Code extension to collect feedback...`);
 
     // 飞书：已配置则推送一张反馈请求卡片（失败不影响插件主流程）。
-    // 例外：忙时队列里已有本项目的排队消息 → 本轮会在注册后立即被队列兑现，
+    // 例外 1：忙时队列里已有本项目的排队消息 → 本轮会在注册后立即被队列兑现，
     // 卡片发出去马上就过期（用户回复只会得到「已结束」），干脆不发。
+    // 例外 2：本轮是超时续期 → 改绑旧卡片而不发新卡，
+    // 避免续期循环每轮刷一张一模一样的卡（headless 主机 50s 一轮时会把用户刷疯）。
     if (this.feishu.isConfigured() && !this.hasQueuedFor(projectDir)) {
-      this.feishu.sendFeedbackCard(requestId, summary, projectDir).catch(() => {});
+      if (renewal && this.feishu.rebindCard(renewal.id, requestId, summary, projectDir)) {
+        debugLog(`Renewal round: rebound Feishu card from ${renewal.id} to ${requestId} (no new card sent)`);
+      } else {
+        this.feishu.sendFeedbackCard(requestId, summary, projectDir).catch(() => {});
+      }
     }
 
     try {
@@ -1225,8 +1271,14 @@ class McpFeedbackServer {
       // 关键：这里【绝不能】说成 "cancelled"——那会让 AI 误以为用户主动取消而结束对话，
       // 这正是“超时后 AI 直接收尾、不再续命”的根因。改为明确区分“超时 ≠ 取消”。
       const autoRetry = this.effectiveAutoRetry();
-      const timeoutMessage = autoRetry
-        ? '[TIMEOUT_KEEP_WAITING] No feedback was submitted within the wait window. This is a TIMEOUT, NOT a cancellation — the user is most likely still away from the keyboard. You MUST immediately call the interactive_feedback tool again with the same project_directory to keep waiting. Do NOT end the conversation, do NOT summarize the task as finished. Only stop calling it when the user EXPLICITLY tells you to stop. 【这是超时续期，并非用户取消：请立即用相同 project_directory 再次调用 interactive_feedback 继续等待，不要结束对话、不要当作任务完成。】'
+      // headless clamp 补偿：等待窗口被压短（<60s）时，AI 请求的动态 timeout（如 300s、
+      // 每轮可传不同值）被翻译成 N 轮短等待。续期链累计还没盖过请求时长 → 本次「超时」
+      // 只是内部分片，无条件续期（即便 autoRetry 关着，也必须等满用户要求的时长才算真超时）。
+      const rt = this.recentlyTimedOut.get(requestId);
+      const chainNotDone =
+        rt !== undefined && rt.requestedTimeoutS * 1000 - (Date.now() - rt.chainStartAt) > 1000;
+      const timeoutMessage = (autoRetry || chainNotDone)
+        ? '[TIMEOUT_KEEP_WAITING] No feedback was submitted within the wait window. This is a TIMEOUT, NOT a cancellation — the user is most likely still away from the keyboard. You MUST immediately call the interactive_feedback tool again with the same project_directory AND the exact same summary (copy it verbatim — when the summary is unchanged the server silently reuses the existing notification card instead of pushing a duplicate to the user; any rewording spams them). Do NOT end the conversation, do NOT summarize the task as finished. Only stop calling it when the user EXPLICITLY tells you to stop. 【这是超时续期，并非用户取消：请立即用相同的 project_directory 和一字不差的 summary 再次调用 interactive_feedback 继续等待（summary 不变时服务端会复用已有通知卡片、不再重复打扰用户；改写 summary 会给用户刷屏）。不要结束对话、不要当作任务完成。】'
         : '[TIMEOUT_END] No feedback was submitted within the wait window and timeout auto-continue is disabled (MCP_AUTO_RETRY=false). You may end this turn now. 【超时未收到反馈，且已关闭超时续期（MCP_AUTO_RETRY=false），可以结束本轮。】';
       return {
         content: [
@@ -1308,8 +1360,16 @@ class McpFeedbackServer {
       const onTimeout = () => {
         debugLog(`Request ${requestId} timed out`);
         this.pendingRequests.delete(requestId);
-        // 记录「刚超时」：续期空窗内的面板提交 / 旧卡片回复可续接到下一轮（顺手清理过期记录）
-        this.recentlyTimedOut.set(requestId, { projectDir, at: Date.now() });
+        // 记录「刚超时」：续期空窗内的面板提交 / 旧卡片回复可续接到下一轮；
+        // summary 供续期轮「改绑旧卡片」判断内容未变；chainStartAt / requestedTimeoutS
+        // 供 outcomeToResult 判断动态请求时长是否真的走完（顺手清理过期记录）
+        this.recentlyTimedOut.set(requestId, {
+          projectDir,
+          at: Date.now(),
+          summary: request.summary,
+          chainStartAt: request.chainStartAt,
+          requestedTimeoutS: request.requestedTimeoutS,
+        });
         for (const [id, v] of this.recentlyTimedOut) {
           if (Date.now() - v.at > McpFeedbackServer.REJOIN_TTL_MS * 4) this.recentlyTimedOut.delete(id);
         }
@@ -1447,6 +1507,27 @@ class McpFeedbackServer {
       this.stashedInbound = { text, chatId, images, files, at: Date.now(), messageId, ttlMs, forProjectDir };
     }
     this.armStashExpiryNotice();
+  }
+
+  /**
+   * 找到本轮的续期来源：同窗口 + 同 summary 的请求刚超时。
+   * 命中说明本轮只是超时续期的下一跳（AI 按 TIMEOUT_KEEP_WAITING 指引原样重调），
+   * 用户视角内容没变——改绑它的卡片（不发新卡）、继承它的续期链起点（保总时长语义）。
+   * 多个候选取最近超时的那个。
+   */
+  private findRenewalSource(
+    projectDir: string,
+    summary: string,
+  ): { id: string; chainStartAt: number } | null {
+    const owner = this.normalizePath(projectDir);
+    let best: { id: string; chainStartAt: number; at: number } | null = null;
+    for (const [id, v] of this.recentlyTimedOut) {
+      if (Date.now() - v.at > McpFeedbackServer.REJOIN_TTL_MS) continue;
+      if (this.normalizePath(v.projectDir) !== owner) continue;
+      if (v.summary !== summary) continue;
+      if (!best || v.at > best.at) best = { id, chainStartAt: v.chainStartAt, at: v.at };
+    }
+    return best ? { id: best.id, chainStartAt: best.chainStartAt } : null;
   }
 
   /**
