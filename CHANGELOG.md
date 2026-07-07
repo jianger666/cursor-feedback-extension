@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.7.2](https://github.com/jianger666/cursor-feedback-extension/compare/v2.7.1...v2.7.2) (2026-07-07)
+
+
+### Bug Fixes
+
+* **cli:** 移除所有 Max Mode 限制——Cursor 新定价按 token 计费，不再需要强制 maxMode=false 和配置守护 ([6724230](https://github.com/jianger666/cursor-feedback-extension/commit/67242301436ce0953d6fff6a86bfec93ab928587))
+
 ### [2.7.1](https://github.com/jianger666/cursor-feedback-extension/compare/v2.7.0...v2.7.1) (2026-07-07)
 
 
