@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.7.5](https://github.com/jianger666/cursor-feedback-extension/compare/v2.7.4...v2.7.5) (2026-07-07)
+
+
+### Bug Fixes
+
+* **mcp:** headless 会话反馈链路修复——等待窗口压进 CLI 60s 硬超时 + 续期改绑卡片不刷屏 ([ca0a488](https://github.com/jianger666/cursor-feedback-extension/commit/ca0a488b413c8bc287668430199c4619e421a781))
+
 ### [2.7.4](https://github.com/jianger666/cursor-feedback-extension/compare/v2.7.3...v2.7.4) (2026-07-07)
 
 
