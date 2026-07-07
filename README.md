@@ -251,7 +251,7 @@ Send these directly in the bot chat:
 | `/model [modelId]` | Show / set the session model (persisted) |
 | `/help` | Show command usage |
 
-- Sessions run in **non-interactive mode**. Before every spawn the launcher rewrites `~/.cursor/cli-config.json` to a clean state (`maxMode=false`, target model, stale `selectedModel` removed), so sessions are billed at the normal per-request rate — including models with a `-max` suffix.
+- Sessions run in **non-interactive mode** with the model specified via `--model` flag.
 - The launched agent talks to you through this extension's feedback cards: confirmations and progress reports are pushed to Feishu; just reply to the cards.
 - Put custom rules in `~/.cursor-feedback/cli-rules.md` (e.g. "always reply in Chinese"); they are injected into every `/new` session.
 - When a session ends (done / error / `/stop` / 3-hour cap), a wrap-up message with the final output is sent to Feishu.

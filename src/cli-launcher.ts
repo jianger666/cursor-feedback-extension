@@ -2,20 +2,6 @@
  * CLI 会话拉起器：飞书 /new 命令 → 非交互模式 spawn cursor-agent。
  *
  * 关键设计（均来自实测结论，勿随意更改）：
- * - 默认模型用**非 Max 变体**（见 DEFAULT_MODEL 注释）。
- * - spawn 前每次都强制重写 ~/.cursor/cli-config.json：maxMode=false + 目标模型，
- *   并删除 selectedModel 残留——三件缺一不可，不能信任上次的状态。
- *   实测机制（2026-07-07 文件监视 + 前日账单交叉验证）：
- *   1. CLI 启动约 5~10s 内会把 --model 解析结果持久化回 cli-config.json 的
- *      selectedModel（含 effort 参数），会话结束时再写一次——任何一次会话
- *      （含 IDE 终端手动跑的）都会留下与该会话模型匹配的残留；
- *   2. 本次会话的实际计费档取决于启动前的文件状态：干净状态（无 selectedModel、
- *      maxMode=false）时即使 --model 传 -max 模型也按非 Max 计 1 次；
- *      但残留 selectedModel(effort=max) 在场时同样命令扣 40+ 并带 MAX 标签。
- *   3. 残留与 --model 冲突时 --model 赢（实验：残留 effort=xhigh + --model low
- *      → 会话按 low 跑）——所以用非 Max 模型时即使清理和别的进程写残留发生竞态
- *      也不会翻车；仅「用户显式选 -max 模型 + 恰好有并发进程写入 max 残留」
- *      这一极小竞态窗口无法从我们这侧根除。
  * - 必须用非交互 print 模式（-p）：交互式 TUI 会持久改写 cli-config.json 的模型选择。
  * - CLI 不读 IDE 的全局 User Rules，用户的个人规则要显式注入到 prompt 里
  *   （从 ~/.cursor-feedback/cli-rules.md 读取，没有则只注入 cursor-feedback 沟通协议）。
@@ -25,6 +11,11 @@
  *   mcp.json（IDE 却能容忍），spawn 前做一次归一化。
  * - 拉起的 agent 会通过全局注册的 cursor-feedback MCP 发飞书卡片，用户在手机上
  *   直接和这个会话对话——本模块只负责拉起和收尾，过程中的交互走既有反馈链路。
+ *
+ * 计费说明（2026-07 Cursor 新定价）：
+ * - Cursor 已从按请求次数计费全面转向按 token 计费（个人/Teams 均是）。
+ * - Max Mode 只影响上下文窗口大小（token 消耗更多），不再有"固定 1 次 vs N 次"的区别。
+ * - 因此不再干预 cli-config.json 的 maxMode/selectedModel——用户自由选择模型和档位。
  */
 import { spawn, execFileSync, ChildProcess } from 'child_process';
 import * as fs from 'fs';
@@ -71,13 +62,6 @@ interface CliSessionLock {
 }
 
 export class CliLauncher {
-  /**
-   * 默认模型：用非 Max 变体（2026-07-06 账单实测）。`-max` 后缀模型（显示名
-   * "Fable 5 1M Max Thinking"）跑过一次后，CLI 会把 selectedModel(effort=max)
-   * 持久化进 cli-config.json，这份残留不清则后续会话按 Max 计费（实测扣 40+）。
-   * ensureMaxModeOff 已做残留清理，但默认模型仍选 thinking-xhigh（非 Max 最高档，
-   * 固定扣 1 次）从根上避开这类状态机风险。
-   */
   private static readonly DEFAULT_MODEL = 'claude-fable-5-thinking-xhigh';
   /** 会话时长兜底：防止无人回复的 headless 会话无限续期挂着 */
   private static readonly SESSION_MAX_MS = 3 * 60 * 60 * 1000;
@@ -222,7 +206,7 @@ export class CliLauncher {
     fs.writeFileSync(p, JSON.stringify(merged, null, 2));
   }
 
-  /** 当前生效模型：env 覆盖 > /model 持久化设置 > 默认。无论选什么模型，spawn 前都强制 maxMode=false */
+  /** 当前生效模型：env 覆盖 > /model 持久化设置 > 默认 */
   model(): string {
     return (
       process.env.CURSOR_FEEDBACK_CLI_MODEL ||
@@ -339,82 +323,6 @@ export class CliLauncher {
     }
   }
 
-  private static cliConfigPath(): string {
-    return path.join(os.homedir(), '.cursor', 'cli-config.json');
-  }
-
-  /** 配置里是否存在会触发 Max 计费的状态（两个独立触发源，任一命中即危险） */
-  private static hasMaxResidue(cfg: Record<string, unknown>): boolean {
-    if (cfg.maxMode === true) return true;
-    const sel = cfg.selectedModel as { parameters?: Array<{ id?: string; value?: string }> } | undefined;
-    if (sel?.parameters?.some((p) => p?.id === 'effort' && p?.value === 'max')) return true;
-    return false;
-  }
-
-  /**
-   * spawn 前强制写 cli-config.json：maxMode=false + 目标模型 + 删除 selectedModel。
-   * 每次都写——上次会话（含用户在终端手动跑的）会留下残留，状态不可信。
-   */
-  private ensureMaxModeOff(): void {
-    const p = CliLauncher.cliConfigPath();
-    let cfg: Record<string, unknown> = {};
-    try {
-      cfg = JSON.parse(fs.readFileSync(p, 'utf-8'));
-    } catch {
-      // 文件不存在或损坏时从空对象重建（cursor-agent 会补齐其余字段）
-    }
-    cfg.maxMode = false;
-    cfg.model = { modelId: this.model(), maxMode: false };
-    cfg.hasChangedDefaultModel = true;
-    // 清掉 CLI 自己写入的 selectedModel（Max 模型会话会留下 effort=max 的残留，
-    // 不删的话下次会话可能沿用 Max 档计费）
-    delete cfg.selectedModel;
-    fs.writeFileSync(p, JSON.stringify(cfg, null, 2));
-    clog(`cli-config.json 已写入 maxMode=false, model=${this.model()}，并清除 selectedModel`);
-  }
-
-  /**
-   * 会话运行期间的配置守护：监听 cli-config.json，一旦出现 Max 残留立即改回干净状态。
-   * 动机：spawn 前的清理只保证「启动瞬间」干净；会话运行中 CLI 自己会把当前模型写回
-   * selectedModel（-max 模型就是 effort=max），若 CLI 存在断线重连等重读配置的路径，
-   * 残留可能被中途拾取。守护用 fs.watch 事件监听做到毫秒级响应，再加 1s 轮询兜底
-   * （fs.watch 少数场景会漏事件）。只在「危险」时才写（maxMode=true 或 effort=max），
-   * 非 Max 状态一律不动，避免与 CLI 的正常写回互相打架。
-   * @returns 停止守护的清理函数（会话结束时调用）
-   */
-  private startConfigGuard(): () => void {
-    const p = CliLauncher.cliConfigPath();
-    const checkAndClean = () => {
-      try {
-        const cfg = JSON.parse(fs.readFileSync(p, 'utf-8')) as Record<string, unknown>;
-        if (CliLauncher.hasMaxResidue(cfg)) {
-          this.ensureMaxModeOff();
-          clog('配置守护：检测到 Max 残留被写回，已立即清除');
-        }
-      } catch {
-        // 文件正被写入（半包 JSON）或暂不可读：跳过，等下一次事件/轮询
-      }
-    };
-    // 监听目录而不是文件本身：CLI 若用「写临时文件再 rename」的原子写法，
-    // 直接 watch 文件会在第一次替换后失去目标（inode 变了）
-    let watcher: fs.FSWatcher | null = null;
-    try {
-      watcher = fs.watch(path.dirname(p), (_event, filename) => {
-        // filename 在个别平台可能为 null，此时也检查一次（checkAndClean 幂等且廉价）
-        if (!filename || filename === path.basename(p)) checkAndClean();
-      });
-      watcher.on('error', () => {
-        // 监听挂掉不影响安全性，轮询兜底还在
-      });
-    } catch {
-      // 平台不支持 fs.watch 时只靠轮询
-    }
-    const timer = setInterval(checkAndClean, 1000);
-    return () => {
-      clearInterval(timer);
-      watcher?.close();
-    };
-  }
 
   /** 用户自定义注入规则：~/.cursor-feedback/cli-rules.md（可选） */
   private readUserRules(): string {
@@ -461,12 +369,6 @@ export class CliLauncher {
       return '已有一个 CLI 会话在运行：' + (this.describe() || '（另一个窗口实例刚刚抢先拉起）');
     }
 
-    try {
-      this.ensureMaxModeOff();
-    } catch (e) {
-      this.releaseLock();
-      return '写入 cli-config.json 失败：' + e;
-    }
     this.normalizeMcpJsonEnv();
 
     const bin = this.findBinary();
@@ -529,15 +431,11 @@ export class CliLauncher {
       clog('会话超过时长上限，强制终止');
       CliLauncher.killTree(child, 'SIGKILL');
     }, CliLauncher.SESSION_MAX_MS);
-    // 会话全程守护 cli-config.json，Max 残留一出现就清（防 CLI 中途重读配置拾取残留）
-    const stopConfigGuard = this.startConfigGuard();
-
     child.stdout?.on('data', (chunk: Buffer) => { stdout = append(stdout, chunk); });
     child.stderr?.on('data', (chunk: Buffer) => { stderr = append(stderr, chunk); });
 
     const finish = (code: number | null) => {
       clearTimeout(killTimer);
-      stopConfigGuard();
       const elapsedMs = Date.now() - this.startedAt;
       // 跨实例 /stop 会在锁上打 stopRequested 标记再杀进程，这里一并算「主动终止」
       const lockAtFinish = this.readLock();

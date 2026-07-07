@@ -33,18 +33,7 @@ function writeFakeAgent(script) {
 }
 
 async function main() {
-  // 预置：残留的 cli-config.json 是 maxMode=true + selectedModel 带 effort=max
-  // （模拟 Max 模型会话结束后 cursor-agent 写回的现场）
   fs.mkdirSync(path.join(tmpHome, '.cursor'), { recursive: true });
-  fs.writeFileSync(
-    path.join(tmpHome, '.cursor', 'cli-config.json'),
-    JSON.stringify({
-      maxMode: true,
-      model: { modelId: 'x', maxMode: true },
-      selectedModel: { modelId: 'claude-fable-5-thinking-max', effort: 'max' },
-      keepMe: 42,
-    }),
-  );
   // 预置：mcp.json 里混着 boolean/number env（实测会让 CLI 静默忽略整个文件）
   fs.writeFileSync(
     path.join(tmpHome, '.cursor', 'mcp.json'),
@@ -57,7 +46,7 @@ async function main() {
   fs.mkdirSync(path.join(tmpHome, '.cursor-feedback'), { recursive: true });
   fs.writeFileSync(path.join(tmpHome, '.cursor-feedback', 'cli-rules.md'), '永远不要启动Subagent');
 
-  console.log('A. 正常会话：config 重写 + prompt 注入 + 结果回调');
+  console.log('A. 正常会话：prompt 注入 + 结果回调');
   {
     // 假 agent：把收到的参数逐行打出，便于断言 prompt 内容
     writeFakeAgent('for a in "$@"; do echo "ARG::$a"; done');
@@ -73,19 +62,11 @@ async function main() {
     check('参数含 -p 非交互', result.output.includes('ARG::-p'));
     check('参数含 --trust', result.output.includes('ARG::--trust'));
     check('参数含 --approve-mcps（headless 必须自动批准 MCP）', result.output.includes('ARG::--approve-mcps'));
-    check('参数含 --model 默认非 Max 变体（xhigh）',
+    check('参数含 --model 默认模型',
       result.output.includes('ARG::claude-fable-5-thinking-xhigh'));
-    check('默认模型绝不能是 -max 后缀的 Max 变体', !result.output.includes('ARG::claude-fable-5-thinking-max'));
     check('prompt 注入沟通协议', result.output.includes('interactive_feedback'));
     check('prompt 注入用户规则', result.output.includes('永远不要启动Subagent'));
     check('prompt 注入任务本体', result.output.includes('帮我修个bug'));
-
-    const cfg = JSON.parse(fs.readFileSync(path.join(tmpHome, '.cursor', 'cli-config.json'), 'utf-8'));
-    check('cli-config 顶层 maxMode=false', cfg.maxMode === false);
-    check('cli-config model.maxMode=false', cfg.model && cfg.model.maxMode === false);
-    check('cli-config model.modelId 正确', cfg.model && cfg.model.modelId === 'claude-fable-5-thinking-xhigh');
-    check('cli-config selectedModel 残留已清除（effort=max 兜底）', !('selectedModel' in cfg));
-    check('cli-config 其他字段保留', cfg.keepMe === 42);
 
     const mcp = JSON.parse(fs.readFileSync(path.join(tmpHome, '.cursor', 'mcp.json'), 'utf-8'));
     const env = mcp.mcpServers['cursor-feedback'].env;
@@ -106,32 +87,6 @@ async function main() {
     const err2 = launcher.start('第二个任务', tmpHome, () => {});
     check('运行中拒绝并发 start', typeof err2 === 'string' && err2.includes('已有'));
     check('describe 含任务摘要', launcher.describe().includes('长任务'));
-
-    // 配置守护：会话运行中模拟 CLI 把 Max 残留写回，fs.watch 应立即清除（轮询 1s 兜底）
-    const cfgPath = path.join(tmpHome, '.cursor', 'cli-config.json');
-    const dirty = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-    dirty.maxMode = true;
-    dirty.selectedModel = { modelId: 'claude-fable-5', parameters: [{ id: 'effort', value: 'max' }] };
-    fs.writeFileSync(cfgPath, JSON.stringify(dirty));
-    const t0 = Date.now();
-    let cleanedAt = -1;
-    while (Date.now() - t0 < 2000) {
-      await new Promise((r) => setTimeout(r, 50));
-      try {
-        const cur = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-        if (cur.maxMode === false && !('selectedModel' in cur)) { cleanedAt = Date.now() - t0; break; }
-      } catch { /* 守护正在写入，下一轮再读 */ }
-    }
-    check(`守护清除了运行中写回的 Max 残留（${cleanedAt}ms）`, cleanedAt >= 0);
-    check('监听生效：清除在 1s 轮询兜底之前完成', cleanedAt >= 0 && cleanedAt < 900);
-    // 非 Max 的正常写回不应被守护打扰
-    const benign = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-    benign.selectedModel = { modelId: 'claude-fable-5', parameters: [{ id: 'effort', value: 'xhigh' }] };
-    fs.writeFileSync(cfgPath, JSON.stringify(benign));
-    await new Promise((r) => setTimeout(r, 1600));
-    const untouched = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-    check('非 Max 的 selectedModel 写回不被守护干预', untouched.selectedModel
-      && untouched.selectedModel.parameters[0].value === 'xhigh');
 
     check('stop 返回 true', launcher.stop() === true);
     const result = await done;

@@ -615,11 +615,11 @@ class McpFeedbackServer {
 
   /**
    * 处理飞书斜杠命令。返回是否已消费该消息。
-   * - /new [目录或项目名] 任务描述：拉起 headless CLI 会话（非交互，spawn 前清 Max 残留）。
+   * - /new [目录或项目名] 任务描述：拉起 headless CLI 会话（非交互模式）。
    *   工作目录刻意保持简单：显式指定 > 主目录，与当前开着哪些 IDE 窗口无关。
    * - /projects：列出 Cursor 打开过的项目路径（供手机上查路径 / 复制给 /new）
    * - /stop：终止运行中的 CLI 会话
-   * - /model [模型id]：查看 / 设置 CLI 会话模型（持久化；无论选什么模型都强制 maxMode=false）
+   * - /model [模型id]：查看 / 设置 CLI 会话模型（持久化）
    */
   private handleCliCommand(rawText: string, chatId: string): boolean {
     // 输入容错：首尾空格（飞书入站已 trim，这里兜底；trim 同样覆盖全角空格 U+3000）；
