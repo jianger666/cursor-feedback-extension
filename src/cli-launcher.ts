@@ -2,12 +2,16 @@
  * CLI 会话拉起器：飞书 /new 命令 → 非交互模式 spawn cursor-agent。
  *
  * 关键设计（均来自实测结论，勿随意更改）：
- * - 默认模型用**非 Max 变体**（见 DEFAULT_MODEL 注释）：`-max` 后缀模型的会话会让
- *   CLI 把 cli-config.json 归一化成 maxMode=true + selectedModel(effort=max)。
- *   这份残留若不清除，下一次会话直接按 Max 跑（2026-07-06 账单实测：同一模型
- *   第一次干净配置扣 1 次无 MAX 标签，第二次带残留扣 40+ 带 MAX 标签）。
+ * - 默认模型用**非 Max 变体**（见 DEFAULT_MODEL 注释）。
  * - spawn 前每次都强制重写 ~/.cursor/cli-config.json：maxMode=false + 目标模型，
  *   并删除 selectedModel 残留——三件缺一不可，不能信任上次的状态。
+ *   实测机制（2026-07-07 文件监视 + 前日账单交叉验证）：
+ *   1. CLI 启动约 5s 内会把 --model 解析结果持久化回 cli-config.json 的
+ *      selectedModel（含 effort 参数），会话结束时再写一次——任何一次会话
+ *      （含 IDE 终端手动跑的）都会留下与该会话模型匹配的残留；
+ *   2. 本次会话的实际计费档取决于启动前的文件状态：干净状态（无 selectedModel、
+ *      maxMode=false）时即使 --model 传 -max 模型也按非 Max 计 1 次；
+ *      但残留 selectedModel(effort=max) 在场时同样命令扣 40+ 并带 MAX 标签。
  * - 必须用非交互 print 模式（-p）：交互式 TUI 会持久改写 cli-config.json 的模型选择。
  * - CLI 不读 IDE 的全局 User Rules，用户的个人规则要显式注入到 prompt 里
  *   （从 ~/.cursor-feedback/cli-rules.md 读取，没有则只注入 cursor-feedback 沟通协议）。
@@ -65,10 +69,10 @@ interface CliSessionLock {
 export class CliLauncher {
   /**
    * 默认模型：用非 Max 变体（2026-07-06 账单实测）。`-max` 后缀模型（显示名
-   * "Fable 5 1M Max Thinking"）本身是 Max 变体：会话过后 CLI 会把 cli-config.json
-   * 归一化成 maxMode=true + selectedModel(effort=max)，残留不清则下次会话按 Max
-   * 计费（实测扣 40+）。ensureMaxModeOff 已做残留清理，但默认模型仍选 thinking-xhigh
-   * （非 Max 最高档，固定扣 1 次）从根上避开这类状态机风险。
+   * "Fable 5 1M Max Thinking"）跑过一次后，CLI 会把 selectedModel(effort=max)
+   * 持久化进 cli-config.json，这份残留不清则后续会话按 Max 计费（实测扣 40+）。
+   * ensureMaxModeOff 已做残留清理，但默认模型仍选 thinking-xhigh（非 Max 最高档，
+   * 固定扣 1 次）从根上避开这类状态机风险。
    */
   private static readonly DEFAULT_MODEL = 'claude-fable-5-thinking-xhigh';
   /** 会话时长兜底：防止无人回复的 headless 会话无限续期挂着 */
