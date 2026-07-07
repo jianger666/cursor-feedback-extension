@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.7.4](https://github.com/jianger666/cursor-feedback-extension/compare/v2.7.3...v2.7.4) (2026-07-07)
+
+
+### Bug Fixes
+
+* **cli:** spawn 补 --force——headless 下 --approve-mcps 只解决 MCP 加载，工具调用仍被审批静默拒绝，agent 发不出飞书卡片（实测 stream-json 确认「用户拒绝了 interactive_feedback」） ([2f20524](https://github.com/jianger666/cursor-feedback-extension/commit/2f205244d065742c3a39e1a181fcd8911cab6426))
+
 ### [2.7.3](https://github.com/jianger666/cursor-feedback-extension/compare/v2.7.2...v2.7.3) (2026-07-07)
 
 
