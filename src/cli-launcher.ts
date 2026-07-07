@@ -5,8 +5,9 @@
  * - 必须用非交互 print 模式（-p）：交互式 TUI 会持久改写 cli-config.json 的模型选择。
  * - CLI 不读 IDE 的全局 User Rules，用户的个人规则要显式注入到 prompt 里
  *   （从 ~/.cursor-feedback/cli-rules.md 读取，没有则只注入 cursor-feedback 沟通协议）。
- * - 必须带 --approve-mcps：MCP 批准状态按工作目录落盘，headless 会话无法弹批准框，
- *   不带这个 flag 时 cursor-feedback 工具根本不加载，agent 会卡死。
+ * - 必须带 --approve-mcps + --force：前者让 MCP 加载（批准状态按工作目录落盘，
+ *   headless 无法弹批准框）；后者放行工具【调用】——只有 --approve-mcps 时
+ *   interactive_feedback 的每次调用仍会被审批拦下并静默拒绝，agent 发不出飞书卡片。
  * - mcp.json 的 env 值必须全是字符串：出现 boolean/number 时 CLI 会静默忽略整个
  *   mcp.json（IDE 却能容忍），spawn 前做一次归一化。
  * - 拉起的 agent 会通过全局注册的 cursor-feedback MCP 发飞书卡片，用户在手机上
@@ -446,7 +447,10 @@ export class CliLauncher {
     // --approve-mcps 必带：headless 无法弹批准框，MCP 不批准就不加载，agent 会找不到
     // cursor-feedback 工具而卡死。批准状态按工作目录存（~/.cursor/projects/<dir>/
     // mcp-approvals.json），逐目录 enable 不现实，只有这个 flag 对任意 cwd 生效。
-    const args = ['-p', '--trust', '--approve-mcps', '--model', this.model(), prompt];
+    // --force 必带（2026-07-07 实测）：--approve-mcps 只解决「MCP 加载」，每次工具
+    // 【调用】在 headless 下仍要审批，没有 --force 时 interactive_feedback 会被静默
+    // 拒绝——agent 完全无法给用户发飞书卡片，只能把结果打到 stdout 等会话结束。
+    const args = ['-p', '--trust', '--force', '--approve-mcps', '--model', this.model(), prompt];
     const isWin = process.platform === 'win32';
     // Windows 上 .cmd/.ps1 不能直接 spawn（Node 18.20+ 禁止），需经 cmd.exe 转发
     const viaCmdShell = isWin && /\.(cmd|bat|ps1)$/i.test(bin);

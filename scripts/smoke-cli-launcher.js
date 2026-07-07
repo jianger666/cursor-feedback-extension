@@ -62,6 +62,7 @@ async function main() {
     check('参数含 -p 非交互', result.output.includes('ARG::-p'));
     check('参数含 --trust', result.output.includes('ARG::--trust'));
     check('参数含 --approve-mcps（headless 必须自动批准 MCP）', result.output.includes('ARG::--approve-mcps'));
+    check('参数含 --force（否则 MCP 工具调用被静默拒绝，agent 发不出卡片）', result.output.includes('ARG::--force'));
     check('参数含 --model 默认模型',
       result.output.includes('ARG::claude-fable-5-thinking-xhigh'));
     check('prompt 注入沟通协议', result.output.includes('interactive_feedback'));
