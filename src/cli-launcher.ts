@@ -374,16 +374,17 @@ export class CliLauncher {
   }
 
   /**
-   * 会话运行期间的配置守护：每秒检查 cli-config.json，一旦出现 Max 残留立即改回干净状态。
+   * 会话运行期间的配置守护：监听 cli-config.json，一旦出现 Max 残留立即改回干净状态。
    * 动机：spawn 前的清理只保证「启动瞬间」干净；会话运行中 CLI 自己会把当前模型写回
    * selectedModel（-max 模型就是 effort=max），若 CLI 存在断线重连等重读配置的路径，
-   * 残留可能被中途拾取。守护把脏窗口压缩到 ~1s 内，兜住这类未知重读时机。
-   * 只在「危险」时才写（maxMode=true 或 effort=max），非 Max 状态一律不动，
-   * 避免与 CLI 的正常写回互相打架。
+   * 残留可能被中途拾取。守护用 fs.watch 事件监听做到毫秒级响应，再加 1s 轮询兜底
+   * （fs.watch 少数场景会漏事件）。只在「危险」时才写（maxMode=true 或 effort=max），
+   * 非 Max 状态一律不动，避免与 CLI 的正常写回互相打架。
+   * @returns 停止守护的清理函数（会话结束时调用）
    */
-  private startConfigGuard(): NodeJS.Timeout {
+  private startConfigGuard(): () => void {
     const p = CliLauncher.cliConfigPath();
-    return setInterval(() => {
+    const checkAndClean = () => {
       try {
         const cfg = JSON.parse(fs.readFileSync(p, 'utf-8')) as Record<string, unknown>;
         if (CliLauncher.hasMaxResidue(cfg)) {
@@ -391,9 +392,28 @@ export class CliLauncher {
           clog('配置守护：检测到 Max 残留被写回，已立即清除');
         }
       } catch {
-        // 文件正被写入（半包）或暂不可读：跳过本轮，下一秒再查
+        // 文件正被写入（半包 JSON）或暂不可读：跳过，等下一次事件/轮询
       }
-    }, 1000);
+    };
+    // 监听目录而不是文件本身：CLI 若用「写临时文件再 rename」的原子写法，
+    // 直接 watch 文件会在第一次替换后失去目标（inode 变了）
+    let watcher: fs.FSWatcher | null = null;
+    try {
+      watcher = fs.watch(path.dirname(p), (_event, filename) => {
+        // filename 在个别平台可能为 null，此时也检查一次（checkAndClean 幂等且廉价）
+        if (!filename || filename === path.basename(p)) checkAndClean();
+      });
+      watcher.on('error', () => {
+        // 监听挂掉不影响安全性，轮询兜底还在
+      });
+    } catch {
+      // 平台不支持 fs.watch 时只靠轮询
+    }
+    const timer = setInterval(checkAndClean, 1000);
+    return () => {
+      clearInterval(timer);
+      watcher?.close();
+    };
   }
 
   /** 用户自定义注入规则：~/.cursor-feedback/cli-rules.md（可选） */
@@ -510,14 +530,14 @@ export class CliLauncher {
       CliLauncher.killTree(child, 'SIGKILL');
     }, CliLauncher.SESSION_MAX_MS);
     // 会话全程守护 cli-config.json，Max 残留一出现就清（防 CLI 中途重读配置拾取残留）
-    const configGuard = this.startConfigGuard();
+    const stopConfigGuard = this.startConfigGuard();
 
     child.stdout?.on('data', (chunk: Buffer) => { stdout = append(stdout, chunk); });
     child.stderr?.on('data', (chunk: Buffer) => { stderr = append(stderr, chunk); });
 
     const finish = (code: number | null) => {
       clearTimeout(killTimer);
-      clearInterval(configGuard);
+      stopConfigGuard();
       const elapsedMs = Date.now() - this.startedAt;
       // 跨实例 /stop 会在锁上打 stopRequested 标记再杀进程，这里一并算「主动终止」
       const lockAtFinish = this.readLock();

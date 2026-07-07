@@ -107,16 +107,23 @@ async function main() {
     check('运行中拒绝并发 start', typeof err2 === 'string' && err2.includes('已有'));
     check('describe 含任务摘要', launcher.describe().includes('长任务'));
 
-    // 配置守护：会话运行中模拟 CLI 把 Max 残留写回，应在 ~1s 内被清除
+    // 配置守护：会话运行中模拟 CLI 把 Max 残留写回，fs.watch 应立即清除（轮询 1s 兜底）
     const cfgPath = path.join(tmpHome, '.cursor', 'cli-config.json');
     const dirty = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
     dirty.maxMode = true;
     dirty.selectedModel = { modelId: 'claude-fable-5', parameters: [{ id: 'effort', value: 'max' }] };
     fs.writeFileSync(cfgPath, JSON.stringify(dirty));
-    await new Promise((r) => setTimeout(r, 1600));
-    const guarded = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-    check('守护清除了运行中写回的 maxMode=true', guarded.maxMode === false);
-    check('守护清除了运行中写回的 selectedModel(effort=max)', !('selectedModel' in guarded));
+    const t0 = Date.now();
+    let cleanedAt = -1;
+    while (Date.now() - t0 < 2000) {
+      await new Promise((r) => setTimeout(r, 50));
+      try {
+        const cur = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+        if (cur.maxMode === false && !('selectedModel' in cur)) { cleanedAt = Date.now() - t0; break; }
+      } catch { /* 守护正在写入，下一轮再读 */ }
+    }
+    check(`守护清除了运行中写回的 Max 残留（${cleanedAt}ms）`, cleanedAt >= 0);
+    check('监听生效：清除在 1s 轮询兜底之前完成', cleanedAt >= 0 && cleanedAt < 900);
     // 非 Max 的正常写回不应被守护打扰
     const benign = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
     benign.selectedModel = { modelId: 'claude-fable-5', parameters: [{ id: 'effort', value: 'xhigh' }] };
