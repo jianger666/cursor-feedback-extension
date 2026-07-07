@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.7.3](https://github.com/jianger666/cursor-feedback-extension/compare/v2.7.2...v2.7.3) (2026-07-07)
+
+
+### Features
+
+* **feishu:** 新增 /models 命令查可用模型列表——手机上不知道模型 id 怎么拼的痛点 ([e63fb46](https://github.com/jianger666/cursor-feedback-extension/commit/e63fb46d96c8798912825f1e39c3246e949857c1))
+
+
+### Bug Fixes
+
+* 全项目扫描修复 8 个 bug + 飞书体验优化 ([d463835](https://github.com/jianger666/cursor-feedback-extension/commit/d46383570f514341fe2ef1a1dba5acbabbb9614e))
+
 ### [2.7.2](https://github.com/jianger666/cursor-feedback-extension/compare/v2.7.1...v2.7.2) (2026-07-07)
 
 
