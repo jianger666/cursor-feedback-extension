@@ -170,6 +170,27 @@ async function main() {
     process.env.PATH = savedPath;
   }
 
+  console.log('B4. listModels：解析 --list-models 输出 + 缓存');
+  {
+    writeFakeAgent(
+      'if [ "$1" = "--list-models" ]; then\n' +
+      '  echo "Available models"\n  echo ""\n' +
+      '  echo "auto - Auto"\n' +
+      '  echo "claude-fable-5-thinking-xhigh - Fable 5 1M Extra High Thinking (NO ZDR)"\n' +
+      '  echo "gpt-5.5-medium - GPT-5.5 1M"\n' +
+      '  echo "Tip: use --model <id> to switch."\n' +
+      'fi',
+    );
+    const launcher = new CliLauncher();
+    const models = launcher.listModels();
+    check('解析出 3 个模型', models.length === 3);
+    check('id 与显示名正确', models.some((m) => m.id === 'claude-fable-5-thinking-xhigh' && m.name.includes('Fable 5')));
+    check('Tip 行不被误解析', !models.some((m) => m.id === 'Tip:'));
+    writeFakeAgent('echo "SHOULD NOT RUN"; exit 1'); // 换脚本后仍应命中缓存
+    const cached = launcher.listModels();
+    check('10 分钟内走缓存', cached.length === 3);
+  }
+
   console.log('D. 收尾回调只触发一次（error 与 close 双事件防重）');
   {
     // 假 agent 是有效脚本但立即退出非 0：close 一定触发；再验证多次事件下 onDone 只回调一次

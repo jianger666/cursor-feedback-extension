@@ -250,6 +250,7 @@ Send these directly in the bot chat:
 | `/status` | Show the running CLI session (task, elapsed time, model) |
 | `/stop` | Terminate the running CLI session |
 | `/model [modelId]` | Show / set the session model (persisted) |
+| `/models [keyword]` | List available models (curated picks by default; filter with a keyword, e.g. `/models fable`) |
 | `/help` | Show command usage |
 
 - Sessions run in **non-interactive mode** with the model specified via `--model` flag.

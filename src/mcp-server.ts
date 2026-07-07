@@ -518,7 +518,7 @@ class McpFeedbackServer {
 
       // 斜杠命令优先于反馈路由：用户显式输入命令时不应被当成对某张卡片的回复或排队消息。
       // 大小写不敏感：手机输入法常自动把句首字母大写（/New），必须容错。
-      if (/^\s*[/／](new|stop|model|cwd|help|projects|status)\b/i.test(text) && this.handleCliCommand(text, chatId)) return;
+      if (/^\s*[/／](new|stop|model|models|cwd|help|projects|status)\b/i.test(text) && this.handleCliCommand(text, chatId)) return;
 
       if (parentId) {
         // 用户「回复」了某条卡片 → 用 parent_id 精确路由
@@ -621,6 +621,7 @@ class McpFeedbackServer {
    * - /status：查看当前 CLI 会话状态
    * - /stop：终止运行中的 CLI 会话
    * - /model [模型id]：查看 / 设置 CLI 会话模型（持久化）
+   * - /models [关键词]：可用模型列表（无关键词给常用推荐，带关键词过滤）
    */
   private handleCliCommand(rawText: string, chatId: string): boolean {
     // 输入容错：首尾空格（飞书入站已 trim，这里兜底；trim 同样覆盖全角空格 U+3000）；
@@ -646,6 +647,8 @@ class McpFeedbackServer {
           '终止运行中的 CLI 会话（任何窗口拉起的都能停）\n\n' +
           '🧠 /model [模型id]\n' +
           '查看 / 设置会话模型（持久化），Max 变体也可以随意选\n\n' +
+          '📋 /models [关键词]\n' +
+          '查可用模型列表（不带关键词看常用推荐；带关键词搜索，如 /models fable）\n\n' +
           '❓ /help\n' +
           '看这份帮助\n\n' +
           '💬 不带斜杠的消息照常作为反馈：回复某张卡片就送达那个请求，直接发送则给当前等待中的 AI。',
@@ -692,15 +695,75 @@ class McpFeedbackServer {
       return true;
     }
 
+    // /models [关键词]：可用模型列表。全量 140+ 个在手机上太长，无关键词时给常用推荐 +
+    // 搜索引导；带关键词按 id / 显示名过滤（大小写不敏感）
+    const mModels = text.match(/^\/models(?:\s+(.+))?\s*$/i);
+    if (mModels) {
+      const all = this.cliLauncher.listModels();
+      if (all.length === 0) {
+        this.feishu.replyText(chatId, '拉取模型列表失败（cursor-agent 未安装或未登录）。可直接 /model 模型id 手动设置。');
+        return true;
+      }
+      const kw = (mModels[1] || '').trim().toLowerCase();
+      if (kw) {
+        const hits = all.filter(
+          (m) => m.id.toLowerCase().includes(kw) || m.name.toLowerCase().includes(kw),
+        );
+        if (hits.length === 0) {
+          this.feishu.replyText(chatId, `没有匹配「${mModels[1]?.trim()}」的模型。试试 /models fable、/models opus、/models gpt`);
+        } else {
+          const MAX_LIST = 40;
+          const lines = hits.slice(0, MAX_LIST).map((m) => `· ${m.id}\n  ${m.name}`);
+          this.feishu.replyText(
+            chatId,
+            `匹配「${mModels[1]?.trim()}」的模型（${hits.length} 个${hits.length > MAX_LIST ? `，只列前 ${MAX_LIST}` : ''}）：\n` +
+              lines.join('\n') +
+              '\n\n设置：/model 模型id',
+          );
+        }
+      } else {
+        // 常用推荐：从实时列表里挑出存在的（模型下线自动消失，不硬编码失效项）
+        const picks = [
+          'claude-fable-5-thinking-xhigh',
+          'claude-fable-5-thinking-max',
+          'claude-opus-4-8-thinking-high',
+          'claude-sonnet-5-thinking-high',
+          'gpt-5.5-medium',
+          'gpt-5.3-codex-high',
+          'composer-2.5-fast',
+          'gemini-3.1-pro',
+        ];
+        const byId = new Map(all.map((m) => [m.id, m]));
+        const lines = picks
+          .filter((id) => byId.has(id))
+          .map((id) => `· ${id}\n  ${byId.get(id)!.name}`);
+        this.feishu.replyText(
+          chatId,
+          `共 ${all.length} 个可用模型。常用推荐：\n${lines.join('\n')}\n\n` +
+            '🔍 按关键词搜完整列表：/models fable、/models opus、/models sonnet、/models gpt、/models max\n' +
+            `设置：/model 模型id（当前：${this.cliLauncher.model()}）`,
+        );
+      }
+      return true;
+    }
+
     const mModel = text.match(/^\/model(?:\s+(\S+))?\s*$/i);
     if (mModel) {
       if (mModel[1]) {
+        // 尽力校验：列表拉得到且不含该 id 时提醒（可能是笔误），但不拦截——
+        // 列表可能滞后于新模型上线，用户明确要设就尊重
+        const all = this.cliLauncher.listModels();
+        const known = all.length === 0 || all.some((m) => m.id === mModel[1]);
         this.cliLauncher.writeSettings({ model: mModel[1] });
-        this.feishu.replyText(chatId, `✅ CLI 模型已设为 ${mModel[1]}`);
+        this.feishu.replyText(
+          chatId,
+          `✅ CLI 模型已设为 ${mModel[1]}` +
+            (known ? '' : '\n⚠️ 这个 id 不在当前模型列表里（可能拼错了），发 /models 可查可用模型。'),
+        );
       } else {
         this.feishu.replyText(
           chatId,
-          `当前 CLI 模型：${this.cliLauncher.model()}\n设置：/model 模型id（例如 /model claude-fable-5-thinking-xhigh）`,
+          `当前 CLI 模型：${this.cliLauncher.model()}\n设置：/model 模型id\n查列表：/models（可加关键词，如 /models fable）`,
         );
       }
       return true;

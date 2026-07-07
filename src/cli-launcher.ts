@@ -221,6 +221,39 @@ export class CliLauncher {
     );
   }
 
+  /** --list-models 结果缓存（拉一次要几秒，10 分钟内复用） */
+  private modelsCache: { at: number; list: Array<{ id: string; name: string }> } | null = null;
+
+  /**
+   * 可用模型列表（调 cursor-agent --list-models 并解析）。
+   * 供飞书 /models 命令用：用户在手机上不知道模型 id 怎么拼，给他们一份带显示名的清单。
+   * 失败（未安装 / 未登录 / 超时）返回空数组，调用方给引导文案。
+   */
+  listModels(): Array<{ id: string; name: string }> {
+    if (this.modelsCache && Date.now() - this.modelsCache.at < 10 * 60 * 1000) {
+      return this.modelsCache.list;
+    }
+    const bin = this.findBinary();
+    if (!bin) return [];
+    try {
+      const isWin = process.platform === 'win32';
+      const viaCmdShell = isWin && /\.(cmd|bat|ps1)$/i.test(bin);
+      const out = viaCmdShell
+        ? execFileSync('cmd.exe', ['/d', '/s', '/c', bin, '--list-models'], { encoding: 'utf-8', timeout: 30000 })
+        : execFileSync(bin, ['--list-models'], { encoding: 'utf-8', timeout: 30000 });
+      const list: Array<{ id: string; name: string }> = [];
+      for (const line of out.split('\n')) {
+        const m = line.match(/^(\S+) - (.+)$/);
+        if (m) list.push({ id: m[1], name: m[2].trim() });
+      }
+      if (list.length > 0) this.modelsCache = { at: Date.now(), list };
+      return list;
+    } catch (e) {
+      clog('拉取模型列表失败: ' + e);
+      return [];
+    }
+  }
+
   /** Cursor IDE 的 storage.json 路径（平台相关） */
   private static storageJsonPath(): string {
     if (process.platform === 'darwin') {

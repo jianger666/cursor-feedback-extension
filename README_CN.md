@@ -254,6 +254,7 @@ npm install -g cursor-feedback
 | `/status` | 查看运行中会话状态（任务、已运行时长、模型） |
 | `/stop` | 终止运行中的 CLI 会话 |
 | `/model [模型id]` | 查看 / 设置会话模型（持久化） |
+| `/models [关键词]` | 查可用模型列表（默认常用推荐；带关键词搜索，如 `/models fable`） |
 | `/help` | 查看命令用法 |
 
 - 会话以**非交互模式**运行，通过 `--model` 参数指定模型。
