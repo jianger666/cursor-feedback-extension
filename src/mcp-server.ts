@@ -615,7 +615,7 @@ class McpFeedbackServer {
 
   /**
    * 处理飞书斜杠命令。返回是否已消费该消息。
-   * - /new [目录或项目名] 任务描述：拉起 headless CLI 会话（非交互 + maxMode=false，扣 1 次请求）。
+   * - /new [目录或项目名] 任务描述：拉起 headless CLI 会话（非交互，spawn 前清 Max 残留）。
    *   工作目录刻意保持简单：显式指定 > 主目录，与当前开着哪些 IDE 窗口无关。
    * - /projects：列出 Cursor 打开过的项目路径（供手机上查路径 / 复制给 /new）
    * - /stop：终止运行中的 CLI 会话
@@ -642,7 +642,7 @@ class McpFeedbackServer {
           '🛑 /stop\n' +
           '终止运行中的 CLI 会话（任何窗口拉起的都能停）\n\n' +
           '🧠 /model [模型id]\n' +
-          '查看 / 设置会话模型（持久化）。⚠️ 别选 -max 后缀的模型，那是 Max 变体、必按 Max 计费\n\n' +
+          '查看 / 设置会话模型（持久化）\n\n' +
           '❓ /help\n' +
           '看这份帮助\n\n' +
           '💬 不带斜杠的消息照常作为反馈：回复某张卡片就送达那个请求，直接发送则给当前等待中的 AI。',
@@ -679,17 +679,11 @@ class McpFeedbackServer {
     if (mModel) {
       if (mModel[1]) {
         this.cliLauncher.writeSettings({ model: mModel[1] });
-        // -max 后缀 = Max 变体模型：会话过后 CLI 会把 cli-config.json 归一化成
-        // maxMode=true + selectedModel(effort=max)，残留会让后续会话按 Max 计费
-        // （实测扣 40+）。拉起前已做残留清理，但仍建议用户直接换非 max 变体避险。
-        const maxWarn = /-max$/i.test(mModel[1])
-          ? '\n⚠️ 这个模型是 Max 变体（-max 后缀），实测有被按 Max 计费的风险（一次会话扣 40+ 次）！按次计费套餐强烈建议换非 max 变体（如 claude-fable-5-thinking-xhigh）。'
-          : '';
-        this.feishu.replyText(chatId, `✅ CLI 模型已设为 ${mModel[1]}${maxWarn}`);
+        this.feishu.replyText(chatId, `✅ CLI 模型已设为 ${mModel[1]}`);
       } else {
         this.feishu.replyText(
           chatId,
-          `当前 CLI 模型：${this.cliLauncher.model()}\n设置：/model 模型id（例如 /model claude-fable-5-thinking-xhigh）\n注意别选 -max 后缀的 Max 变体，那会按 Max 计费。`,
+          `当前 CLI 模型：${this.cliLauncher.model()}\n设置：/model 模型id（例如 /model claude-fable-5-thinking-xhigh）`,
         );
       }
       return true;

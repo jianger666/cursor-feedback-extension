@@ -6,12 +6,16 @@
  * - spawn 前每次都强制重写 ~/.cursor/cli-config.json：maxMode=false + 目标模型，
  *   并删除 selectedModel 残留——三件缺一不可，不能信任上次的状态。
  *   实测机制（2026-07-07 文件监视 + 前日账单交叉验证）：
- *   1. CLI 启动约 5s 内会把 --model 解析结果持久化回 cli-config.json 的
+ *   1. CLI 启动约 5~10s 内会把 --model 解析结果持久化回 cli-config.json 的
  *      selectedModel（含 effort 参数），会话结束时再写一次——任何一次会话
  *      （含 IDE 终端手动跑的）都会留下与该会话模型匹配的残留；
  *   2. 本次会话的实际计费档取决于启动前的文件状态：干净状态（无 selectedModel、
  *      maxMode=false）时即使 --model 传 -max 模型也按非 Max 计 1 次；
  *      但残留 selectedModel(effort=max) 在场时同样命令扣 40+ 并带 MAX 标签。
+ *   3. 残留与 --model 冲突时 --model 赢（实验：残留 effort=xhigh + --model low
+ *      → 会话按 low 跑）——所以用非 Max 模型时即使清理和别的进程写残留发生竞态
+ *      也不会翻车；仅「用户显式选 -max 模型 + 恰好有并发进程写入 max 残留」
+ *      这一极小竞态窗口无法从我们这侧根除。
  * - 必须用非交互 print 模式（-p）：交互式 TUI 会持久改写 cli-config.json 的模型选择。
  * - CLI 不读 IDE 的全局 User Rules，用户的个人规则要显式注入到 prompt 里
  *   （从 ~/.cursor-feedback/cli-rules.md 读取，没有则只注入 cursor-feedback 沟通协议）。

@@ -251,7 +251,7 @@ Send these directly in the bot chat:
 | `/model [modelId]` | Show / set the session model (persisted) |
 | `/help` | Show command usage |
 
-- Sessions run in **non-interactive mode** with a non-Max default model (`claude-fable-5-thinking-xhigh`) and `maxMode=false` force-written before spawn. ⚠️ Do **not** pick a model whose id ends with `-max` — those are inherently Max variants and the CLI will bill them as Max no matter what the config says.
+- Sessions run in **non-interactive mode**. Before every spawn the launcher rewrites `~/.cursor/cli-config.json` to a clean state (`maxMode=false`, target model, stale `selectedModel` removed), so sessions are billed at the normal per-request rate — including models with a `-max` suffix.
 - The launched agent talks to you through this extension's feedback cards: confirmations and progress reports are pushed to Feishu; just reply to the cards.
 - Put custom rules in `~/.cursor-feedback/cli-rules.md` (e.g. "always reply in Chinese"); they are injected into every `/new` session.
 - When a session ends (done / error / `/stop` / 3-hour cap), a wrap-up message with the final output is sent to Feishu.
