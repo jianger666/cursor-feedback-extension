@@ -71,7 +71,9 @@ body {
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-  padding: var(--sp-3);
+  /* 侧边栏宽度金贵：左右收窄（.app/.card/.summary 三层 padding 会叠加，
+     每层都省一点，正文可用宽度明显变大） */
+  padding: var(--sp-3) var(--sp-1);
   height: 100vh;
   overflow: hidden;
 }
@@ -406,7 +408,7 @@ svg {
   background: var(--surface-raised);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  padding: var(--sp-3);
+  padding: var(--sp-3) var(--sp-2);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 .card__head {
@@ -515,7 +517,7 @@ svg {
   overflow-y: auto;
   font-size: 13px;
   line-height: 1.65;
-  padding: var(--sp-3);
+  padding: var(--sp-2);
   background: var(--surface-sunken);
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-md);
