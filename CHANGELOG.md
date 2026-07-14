@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.7.6](https://github.com/jianger666/cursor-feedback-extension/compare/v2.7.5...v2.7.6) (2026-07-14)
+
+
+### Styles
+
+* **webview:** 压缩面板左右留白——.app/.card/.summary 三层 padding 叠加达每侧 36px，收窄到 20px，正文可用宽度明显变大 ([8c027e4](https://github.com/jianger666/cursor-feedback-extension/commit/8c027e4f7d05a9c5fdd899fc5cd4702779999695))
+* **webview:** 面板留白重调——清除 VS Code 注入的 body 默认 padding（每侧约 20px 的隐形留白），内层 .card/.summary 收到 6px，外层 16px 呼吸感，每侧总留白 56px → 28px ([16566e4](https://github.com/jianger666/cursor-feedback-extension/commit/16566e42e1ccbd417c09e1bc3420fe5e12319c65))
+
 ### [2.7.5](https://github.com/jianger666/cursor-feedback-extension/compare/v2.7.4...v2.7.5) (2026-07-07)
 
 
