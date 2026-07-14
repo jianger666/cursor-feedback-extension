@@ -65,15 +65,19 @@ body {
   background: var(--surface);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  /* VS Code 给 webview 注入的默认样式带 body 左右 padding（约 20px），
+     通配符 * 的优先级压不过元素选择器，必须在这里显式清零 */
+  padding: 0;
 }
 
 .app {
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
-  /* 侧边栏宽度金贵：左右收窄（.app/.card/.summary 三层 padding 会叠加，
-     每层都省一点，正文可用宽度明显变大） */
-  padding: var(--sp-3) var(--sp-1);
+  /* 侧边栏宽度金贵：内层（.card/.summary）收到 6px，外层留 16px 呼吸感
+     （实测 0/4/12px 逐档调过，16px 视觉最舒服；VS Code 注入的 body 默认
+     padding 已在 body 处清零，这里是唯一的外层留白来源） */
+  padding: var(--sp-3) var(--sp-4);
   height: 100vh;
   overflow: hidden;
 }
@@ -408,7 +412,7 @@ svg {
   background: var(--surface-raised);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  padding: var(--sp-3) var(--sp-2);
+  padding: var(--sp-3) 6px;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
 }
 .card__head {
@@ -517,7 +521,7 @@ svg {
   overflow-y: auto;
   font-size: 13px;
   line-height: 1.65;
-  padding: var(--sp-2);
+  padding: var(--sp-2) 6px;
   background: var(--surface-sunken);
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-md);
