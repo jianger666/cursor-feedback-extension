@@ -7,3 +7,5 @@ alwaysApply: true
 
 ## 发布流程
 - 发版（npm / Open VSX / VS Code Marketplace）前必须经用户明确确认，绝不能改完代码直接发。改动完成后先提交 + 跑冒烟，向用户汇报并等确认后再走发版流程。
+- 推 tag 后必须盯到 GitHub Actions 跑完，并验证 npm 与 Open VSX 两个渠道的版本号都等于新版本才算发布完成（2026-07-14 曾因 npm@latest 升 12 与 Node 20 不兼容导致 npm 渠道静默漏发一天）。验证命令：`npm view cursor-feedback version` + `curl -s https://open-vsx.org/api/jianger666/cursor-feedback`（Open VSX API 有 1 分钟左右缓存延迟）。
+- CI 里的工具链版本要 pin 主版本（如 `npm install -g npm@11`），不用 `@latest`——上游发新版会把流水线带崩。
