@@ -42,9 +42,12 @@ jobs:
         if: env.OVSX_PAT != ''
         run: npx --yes ovsx publish *.vsix -p "$OVSX_PAT"
 
-      # npm Trusted Publishing 需要较新的 npm CLI（OIDC 支持）
+      # npm Trusted Publishing 需要 npm >= 11.5（OIDC 支持）。
+      # 必须 pin 主版本 11：npm@latest 已升到 12、要求 Node >= 22.22，
+      # 与本 job 的 Node 20 不兼容（2026-07-14 v2.7.6 发版即因此 EBADENGINE 失败，
+      # npm 渠道漏发）。npm 11 支持 Node ^20.17，稳定匹配。
       - name: Upgrade npm
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       - name: Publish to npm (Trusted Publishing)
         run: npm publish
