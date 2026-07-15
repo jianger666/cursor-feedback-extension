@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [2.7.7](https://github.com/jianger666/cursor-feedback-extension/compare/v2.7.6...v2.7.7) (2026-07-15)
+
+
+### Bug Fixes
+
+* **ci:** 发布流水线 pin npm@11——npm@latest 已升 12 要求 Node>=22.22，与 job 的 Node 20 不兼容致 EBADENGINE，v2.7.6 npm 渠道漏发 ([f35ad7c](https://github.com/jianger666/cursor-feedback-extension/commit/f35ad7c4584e8863ba2e0b6313fff0735db740ba))
+
 ### [2.7.6](https://github.com/jianger666/cursor-feedback-extension/compare/v2.7.5...v2.7.6) (2026-07-14)
 
 
